@@ -28,7 +28,7 @@ export function useClientes() {
     fetchClientes()
   }, [fetchClientes])
 
-  const searchClientes = async (query: string) => {
+  const searchClientes = useCallback(async (query: string) => {
     if (!negocio || !query.trim()) return clientes
     const { data } = await supabase
       .from("clientes")
@@ -38,7 +38,7 @@ export function useClientes() {
       .order("nombre")
       .limit(20)
     return (data as Cliente[]) ?? []
-  }
+  }, [negocio, clientes])
 
   const createCliente = async (cliente: {
     nombre: string

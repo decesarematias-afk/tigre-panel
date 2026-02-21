@@ -49,7 +49,7 @@ export function useHorarios() {
    * Genera los slots de tiempo disponibles para un día específico.
    * Devuelve arrays de strings "HH:MM" en intervalos de 15 minutos.
    */
-  function getAvailableSlots(fecha: Date): string[] {
+  const getAvailableSlots = useCallback((fecha: Date): string[] => {
     const diaSemana = fecha.getDay()
     const horario = horarios.find((h) => h.dia_semana === diaSemana)
 
@@ -76,16 +76,16 @@ export function useHorarios() {
     }
 
     return slots
-  }
+  }, [horarios])
 
   /**
    * Verifica si un turno propuesto cae dentro del horario de atención.
    */
-  function isWithinBusinessHours(
+  const isWithinBusinessHours = useCallback((
     fecha: Date,
     horaInicio: string,
     horaFin: string
-  ): boolean {
+  ): boolean => {
     const diaSemana = fecha.getDay()
     const horario = horarios.find((h) => h.dia_semana === diaSemana)
 
@@ -109,7 +109,7 @@ export function useHorarios() {
     }
 
     return false
-  }
+  }, [horarios])
 
   return {
     horarios,
