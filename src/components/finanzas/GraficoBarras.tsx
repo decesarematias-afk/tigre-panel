@@ -50,7 +50,7 @@ export function GraficoBarras({ datos }: Props) {
                 width={50}
               />
               <Tooltip
-                formatter={(value: number) => formatPrecio(value)}
+                formatter={(value) => formatPrecio(value as number)}
                 labelFormatter={(label) => `Día ${label}`}
                 contentStyle={{
                   backgroundColor: "#1A1A1A",

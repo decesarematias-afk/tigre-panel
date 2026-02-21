@@ -1,4 +1,4 @@
-import { useForm } from "react-hook-form"
+import { useForm, type Resolver } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { toast } from "sonner"
@@ -83,7 +83,7 @@ export function CrearMovimientoDialog({
     reset,
     formState: { errors, isSubmitting },
   } = useForm<FormData>({
-    resolver: zodResolver(movimientoSchema),
+    resolver: zodResolver(movimientoSchema) as Resolver<FormData>,
     defaultValues: {
       tipo: "egreso",
       fecha: defaultFecha ?? new Date().toISOString().split("T")[0],
