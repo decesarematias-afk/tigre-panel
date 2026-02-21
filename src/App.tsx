@@ -6,6 +6,7 @@ import { Dashboard } from "@/pages/Dashboard"
 import { Clientes } from "@/pages/Clientes"
 import { Reportes } from "@/pages/Reportes"
 import { WhatsApp } from "@/pages/WhatsApp"
+import { Finanzas } from "@/pages/Finanzas"
 import { Configuracion } from "@/pages/Configuracion"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -57,6 +58,7 @@ const router = createBrowserRouter([
       { path: "dashboard", element: <Dashboard /> },
       { path: "clientes", element: <Clientes /> },
       { path: "whatsapp", element: <WhatsApp /> },
+      { path: "finanzas", element: <Finanzas /> },
       { path: "reportes", element: <Reportes /> },
       { path: "configuracion", element: <Configuracion /> },
     ],

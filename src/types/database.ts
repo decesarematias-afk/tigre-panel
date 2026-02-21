@@ -85,6 +85,29 @@ export interface WhatsAppChatConfig {
   updated_at: string
 }
 
+export type TipoMovimiento = "ingreso" | "egreso"
+export type CategoriaMovimiento =
+  | "turno"
+  | "producto"
+  | "alquiler"
+  | "servicios"
+  | "insumos"
+  | "impuestos"
+  | "sueldo"
+  | "otro"
+
+export interface Movimiento {
+  id: string
+  negocio_id: string
+  tipo: TipoMovimiento
+  categoria: CategoriaMovimiento
+  monto: number
+  descripcion: string
+  fecha: string
+  turno_id: string | null
+  created_at: string
+}
+
 export interface HorarioAtencion {
   id: string
   negocio_id: string
@@ -123,6 +146,11 @@ export interface Database {
         Row: HorarioAtencion
         Insert: Omit<HorarioAtencion, "id">
         Update: Partial<Omit<HorarioAtencion, "id">>
+      }
+      movimientos: {
+        Row: Movimiento
+        Insert: Omit<Movimiento, "id" | "created_at">
+        Update: Partial<Omit<Movimiento, "id" | "created_at">>
       }
     }
   }

@@ -1,6 +1,6 @@
 import { NavLink } from "react-router"
 import { useAuth } from "@/hooks/useAuth"
-import { Calendar, Users, MessageCircle, BarChart3, Settings, LogOut, Scissors } from "lucide-react"
+import { Calendar, Users, MessageCircle, BarChart3, DollarSign, Settings, LogOut, Scissors } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   Tooltip,
@@ -12,6 +12,7 @@ const navItems = [
   { to: "/dashboard", label: "Agenda", icon: Calendar },
   { to: "/clientes", label: "Clientes", icon: Users },
   { to: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
+  { to: "/finanzas", label: "Finanzas", icon: DollarSign },
   { to: "/reportes", label: "Reportes", icon: BarChart3 },
   { to: "/configuracion", label: "Configuración", icon: Settings },
 ]
