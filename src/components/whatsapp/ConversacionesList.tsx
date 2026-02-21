@@ -2,7 +2,7 @@ import { useState, useMemo } from "react"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Search, MessageCircle } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, formatPhone } from "@/lib/utils"
 import type { WhatsAppConversacion } from "@/types/database"
 
 interface Props {
@@ -10,18 +10,6 @@ interface Props {
   selectedChatId: string | null
   onSelectChat: (chatId: string) => void
   loading: boolean
-}
-
-function formatPhone(chatId: string): string {
-  // "5491165839170@c.us" → "+54 9 11 6583-9170"
-  const num = chatId.replace("@c.us", "").replace("@s.whatsapp.net", "")
-  if (num.length >= 12 && num.startsWith("549")) {
-    const area = num.slice(3, 5)
-    const first = num.slice(5, 9)
-    const last = num.slice(9)
-    return `+54 9 ${area} ${first}-${last}`
-  }
-  return `+${num}`
 }
 
 function formatTime(dateStr: string): string {

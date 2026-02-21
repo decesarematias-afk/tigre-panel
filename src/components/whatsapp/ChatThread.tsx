@@ -7,7 +7,7 @@ import {
   User,
   Loader2,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, formatPhone } from "@/lib/utils"
 import { Switch } from "@/components/ui/switch"
 import type { WhatsAppMensaje, ChatMode } from "@/types/database"
 
@@ -20,17 +20,6 @@ interface Props {
   onBack?: () => void
   onToggleMode: (chatId: string) => void
   onSendMessage: (chatId: string, message: string) => Promise<boolean>
-}
-
-function formatPhone(chatId: string): string {
-  const num = chatId.replace("@c.us", "").replace("@s.whatsapp.net", "")
-  if (num.length >= 12 && num.startsWith("549")) {
-    const area = num.slice(3, 5)
-    const first = num.slice(5, 9)
-    const last = num.slice(9)
-    return `+54 9 ${area} ${first}-${last}`
-  }
-  return `+${num}`
 }
 
 function formatMessageTime(dateStr: string): string {

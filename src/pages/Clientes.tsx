@@ -36,6 +36,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { exportToCSV } from "@/lib/export"
+import { cleanPhoneFromChatId } from "@/lib/utils"
 
 export function Clientes() {
   const { clientes, loading, deleteCliente } = useClientes()
@@ -173,7 +174,7 @@ export function Clientes() {
                   {cliente.telefono && (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Phone className="w-3 h-3" />
-                      {cliente.telefono}
+                      {cleanPhoneFromChatId(cliente.telefono)}
                     </span>
                   )}
                   {cliente.email && (
