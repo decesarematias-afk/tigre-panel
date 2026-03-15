@@ -1,5 +1,5 @@
-const wahaUrl = import.meta.env.VITE_WAHA_API_URL as string | undefined
-const wahaApiKey = import.meta.env.VITE_WAHA_API_KEY as string | undefined
+const envWahaUrl = import.meta.env.VITE_WAHA_API_URL as string | undefined
+const envWahaApiKey = import.meta.env.VITE_WAHA_API_KEY as string | undefined
 
 export type WahaSessionStatus =
   | "WORKING"
@@ -14,48 +14,57 @@ interface WahaSession {
   me?: { id: string; pushName: string } | null
 }
 
-function headers(): HeadersInit {
+function buildHeaders(apiKey?: string): HeadersInit {
   const h: HeadersInit = {}
-  if (wahaApiKey) h["X-Api-Key"] = wahaApiKey
+  const key = apiKey ?? envWahaApiKey
+  if (key) h["X-Api-Key"] = key
   return h
 }
 
-export function isWahaConfigured(): boolean {
-  return Boolean(wahaUrl)
+export function resolveWahaUrl(overrideUrl?: string): string | null {
+  return overrideUrl || envWahaUrl || null
+}
+
+export function isWahaConfigured(overrideUrl?: string): boolean {
+  return Boolean(resolveWahaUrl(overrideUrl))
 }
 
 export async function getWahaStatus(
-  session = "default"
+  session = "default",
+  overrideUrl?: string,
+  overrideKey?: string
 ): Promise<{ status: WahaSessionStatus; name: string } | null> {
-  if (!wahaUrl) return null
+  const url = resolveWahaUrl(overrideUrl)
+  if (!url) return null
 
-  const res = await fetch(`${wahaUrl}/api/sessions/${session}`, {
-    headers: headers(),
-  })
-
-  if (!res.ok) return null
-
-  const data = (await res.json()) as WahaSession
-  return { status: data.status, name: data.me?.pushName ?? session }
-}
-
-export function getWahaQRUrl(session = "default"): string | null {
-  if (!wahaUrl) return null
-  const params = wahaApiKey ? `?key=${encodeURIComponent(wahaApiKey)}` : ""
-  return `${wahaUrl}/api/${session}/auth/qr${params}`
+  try {
+    const res = await fetch(`${url}/api/sessions/${session}`, {
+      headers: buildHeaders(overrideKey),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as WahaSession
+    return { status: data.status, name: data.me?.pushName ?? session }
+  } catch {
+    return null
+  }
 }
 
 export async function getWahaQRBase64(
-  session = "default"
+  session = "default",
+  overrideUrl?: string,
+  overrideKey?: string
 ): Promise<string | null> {
-  if (!wahaUrl) return null
+  const url = resolveWahaUrl(overrideUrl)
+  if (!url) return null
 
-  const res = await fetch(`${wahaUrl}/api/${session}/auth/qr`, {
-    headers: { ...headers(), Accept: "application/json" },
-  })
-
-  if (!res.ok) return null
-
-  const data = (await res.json()) as { mimetype: string; data: string }
-  return `data:${data.mimetype};base64,${data.data}`
+  try {
+    const res = await fetch(`${url}/api/${session}/auth/qr`, {
+      headers: { ...buildHeaders(overrideKey), Accept: "application/json" },
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { mimetype: string; data: string }
+    return `data:${data.mimetype};base64,${data.data}`
+  } catch {
+    return null
+  }
 }

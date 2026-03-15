@@ -9,6 +9,8 @@ export interface Negocio {
   direccion: string | null
   telefono: string | null
   email: string | null
+  waha_url: string | null
+  waha_api_key: string | null
   created_at: string
 }
 

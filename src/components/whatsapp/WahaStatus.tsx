@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react"
 import { Wifi, WifiOff, QrCode, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/hooks/useAuth"
 import {
   Dialog,
   DialogContent,
@@ -27,13 +28,16 @@ const STATUS_CONFIG: Record<
 }
 
 export function WahaStatus() {
+  const { negocio } = useAuth()
   const [status, setStatus] = useState<WahaSessionStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [qrOpen, setQrOpen] = useState(false)
   const [qrSrc, setQrSrc] = useState<string | null>(null)
   const [qrLoading, setQrLoading] = useState(false)
 
-  const configured = isWahaConfigured()
+  const wahaUrl = negocio?.waha_url ?? undefined
+  const wahaKey = negocio?.waha_api_key ?? undefined
+  const configured = isWahaConfigured(wahaUrl)
 
   const checkStatus = useCallback(async () => {
     if (!configured) {
@@ -41,14 +45,14 @@ export function WahaStatus() {
       return
     }
     try {
-      const result = await getWahaStatus()
+      const result = await getWahaStatus("default", wahaUrl, wahaKey)
       setStatus(result?.status ?? null)
     } catch {
       setStatus(null)
     } finally {
       setLoading(false)
     }
-  }, [configured])
+  }, [configured, wahaUrl, wahaKey])
 
   useEffect(() => {
     checkStatus()
@@ -60,14 +64,14 @@ export function WahaStatus() {
   const fetchQR = useCallback(async () => {
     setQrLoading(true)
     try {
-      const src = await getWahaQRBase64()
+      const src = await getWahaQRBase64("default", wahaUrl, wahaKey)
       setQrSrc(src)
     } catch {
       setQrSrc(null)
     } finally {
       setQrLoading(false)
     }
-  }, [])
+  }, [wahaUrl, wahaKey])
 
   // Auto-refresh QR every 15s when dialog is open
   useEffect(() => {
@@ -77,18 +81,18 @@ export function WahaStatus() {
     return () => clearInterval(interval)
   }, [qrOpen, fetchQR])
 
-  // Also re-check status while QR dialog is open
+  // Re-check status while QR dialog is open — auto-close on WORKING
   useEffect(() => {
     if (!qrOpen) return
     const interval = setInterval(async () => {
-      const result = await getWahaStatus()
+      const result = await getWahaStatus("default", wahaUrl, wahaKey)
       if (result?.status === "WORKING") {
         setStatus("WORKING")
         setQrOpen(false)
       }
     }, 5_000)
     return () => clearInterval(interval)
-  }, [qrOpen])
+  }, [qrOpen, wahaUrl, wahaKey])
 
   if (!configured) {
     return (

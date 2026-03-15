@@ -19,7 +19,7 @@ interface AuthContextType {
     password: string
   ) => Promise<{ error: Error | null }>
   signOut: () => Promise<void>
-  updateNegocio: (updates: Partial<Pick<Negocio, "nombre" | "direccion" | "telefono" | "email">>) => Promise<{ error: Error | null }>
+  updateNegocio: (updates: Partial<Pick<Negocio, "nombre" | "direccion" | "telefono" | "email" | "waha_url" | "waha_api_key">>) => Promise<{ error: Error | null }>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -80,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const updateNegocio = async (
-    updates: Partial<Pick<Negocio, "nombre" | "direccion" | "telefono" | "email">>
+    updates: Partial<Pick<Negocio, "nombre" | "direccion" | "telefono" | "email" | "waha_url" | "waha_api_key">>
   ) => {
     if (!negocio) return { error: new Error("Sin negocio") }
     const { data, error } = await supabase
