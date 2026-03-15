@@ -1,6 +1,7 @@
 import { useWhatsApp } from "@/hooks/useWhatsApp"
 import { ConversacionesList } from "@/components/whatsapp/ConversacionesList"
 import { ChatThread } from "@/components/whatsapp/ChatThread"
+import { WahaStatus } from "@/components/whatsapp/WahaStatus"
 import { Card } from "@/components/ui/card"
 
 export function WhatsApp() {
@@ -24,7 +25,10 @@ export function WhatsApp() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">WhatsApp</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">WhatsApp</h1>
+        <WahaStatus />
+      </div>
 
       <div className="grid lg:grid-cols-[380px_1fr] gap-4 h-[calc(100vh-180px)]">
         {/* Lista de conversaciones - oculta en mobile cuando hay chat seleccionado */}
