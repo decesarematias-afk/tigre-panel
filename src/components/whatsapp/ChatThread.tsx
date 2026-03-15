@@ -6,6 +6,7 @@ import {
   SendHorizonal,
   User,
   Loader2,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Switch } from "@/components/ui/switch"
@@ -60,11 +61,23 @@ function getDateKey(dateStr: string): string {
   return new Date(dateStr).toISOString().split("T")[0]
 }
 
+function isPendingTooLong(msg: WhatsAppMensaje): boolean {
+  if (msg.mensaje_tipo !== "manual_pending") return false
+  const elapsed = Date.now() - new Date(msg.created_at).getTime()
+  return elapsed > 30_000
+}
+
 function getMessageLabel(
   msg: WhatsAppMensaje
 ): { icon: typeof Bot; label: string; color: string } | null {
   if (msg.es_entrante) return null
-  if (msg.mensaje_tipo === "manual" || msg.mensaje_tipo === "manual_pending") {
+  if (msg.mensaje_tipo === "manual_pending") {
+    if (isPendingTooLong(msg)) {
+      return { icon: AlertTriangle, label: "Sin enviar", color: "red" }
+    }
+    return { icon: User, label: "Enviando...", color: "blue" }
+  }
+  if (msg.mensaje_tipo === "manual") {
     return { icon: User, label: "Manual", color: "blue" }
   }
   if (msg.mensaje_tipo === "manual_error") {
@@ -85,6 +98,15 @@ export function ChatThread({
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [inputMessage, setInputMessage] = useState("")
+  const [, setTick] = useState(0)
+
+  // Re-render periodically to update stale pending message indicators
+  const hasPending = mensajes.some((m) => m.mensaje_tipo === "manual_pending")
+  useEffect(() => {
+    if (!hasPending) return
+    const interval = setInterval(() => setTick((t) => t + 1), 10_000)
+    return () => clearInterval(interval)
+  }, [hasPending])
 
   // Auto-scroll al fondo
   useEffect(() => {
