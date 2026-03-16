@@ -20,6 +20,7 @@ const {
   NEGOCIO_DIRECCION = "",
   NEGOCIO_TELEFONO = "",
   OWNER_PHONE = "5491159027202",
+  OWNER_ACCESS_KEY = "",
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -46,6 +47,7 @@ const wahaHeaders = {
 // ─── Estado ──────────────────────────────────────────────
 let healthy = false;
 const processedMessages = new Set(); // wa_message_ids ya procesados
+const ownerChatIds = new Set(); // chatIds autenticados como dueño
 const sentReminders = new Set(); // turno IDs con recordatorio enviado
 const botCancelledTurnos = new Set(); // turno IDs cancelados por el bot (no notificar como panel)
 
@@ -295,6 +297,21 @@ async function getNegocioId() {
   if (NEGOCIO_ID) return NEGOCIO_ID;
   const { data } = await supabase.from("negocios").select("id").limit(1);
   return data?.[0]?.id ?? null;
+}
+
+async function loadOwnerChatIds() {
+  try {
+    const { data } = await supabase
+      .from("whatsapp_chat_config")
+      .select("chat_id")
+      .eq("modo", "owner");
+    if (data?.length) {
+      for (const row of data) ownerChatIds.add(row.chat_id);
+      console.log(`[OWNER] ${data.length} chat(s) autenticados como dueño cargados`);
+    }
+  } catch (err) {
+    console.error("[OWNER] Error cargando owner chatIds:", err.message);
+  }
 }
 
 // ─── Funciones de datos ──────────────────────────────────
@@ -858,6 +875,23 @@ async function handleBotAction(action, negocioId, chatId, phone) {
 async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
   const phone = await getPhoneFromChat(chatId);
 
+  // Autenticación por access key del dueño
+  if (OWNER_ACCESS_KEY && texto.trim() === OWNER_ACCESS_KEY) {
+    ownerChatIds.add(chatId);
+    await supabase.from("whatsapp_chat_config").upsert(
+      { negocio_id: negocioId, chat_id: chatId, modo: "owner" },
+      { onConflict: "negocio_id,chat_id" }
+    );
+    const msg = "✅ Autenticación exitosa. Te reconozco como dueño del negocio. ¿En qué te puedo ayudar?";
+    await sendWhatsApp(chatId, msg);
+    await supabase.from("whatsapp_mensajes").insert({
+      negocio_id: negocioId, chat_id: chatId, mensaje: msg,
+      es_entrante: false, mensaje_tipo: "text", wa_message_id: waMessageId + "_auth",
+    });
+    console.log(`🔑 [OWNER AUTH] ${chatId} autenticado como dueño`);
+    return;
+  }
+
   // Verificar modo del chat (bot vs manual)
   const { data: config } = await supabase
     .from("whatsapp_chat_config")
@@ -879,8 +913,16 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     getChatHistory(negocioId, chatId, 20),
   ]);
 
-  // Detectar si es el dueño
-  const isOwner = phone === OWNER_PHONE || phone === `549${OWNER_PHONE}` || OWNER_PHONE?.endsWith(phone?.slice(-10));
+  // Detectar si es el dueño (por access key previo, o por número de teléfono)
+  const isOwner = ownerChatIds.has(chatId) || phone === OWNER_PHONE || phone === `549${OWNER_PHONE}` || OWNER_PHONE?.endsWith(phone?.slice(-10));
+  // Persistir chatId si se detectó por teléfono pero no estaba guardado
+  if (isOwner && !ownerChatIds.has(chatId)) {
+    ownerChatIds.add(chatId);
+    supabase.from("whatsapp_chat_config").upsert(
+      { negocio_id: negocioId, chat_id: chatId, modo: "owner" },
+      { onConflict: "negocio_id,chat_id" }
+    ).then(() => console.log(`[OWNER] ${chatId} guardado como dueño (por teléfono)`));
+  }
   const systemPrompt = isOwner
     ? buildOwnerSystemPrompt(servicios, horarios)
     : buildSystemPrompt(servicios, horarios);
@@ -1263,9 +1305,11 @@ console.log(`  WAHA: ${WAHA_API_URL} (sesion: ${WAHA_SESSION})`);
 console.log(`  Supabase: ${SUPABASE_URL}`);
 console.log(`  IA: ${OPENAI_API_KEY ? "OpenAI" : ""}${OPENAI_API_KEY && ANTHROPIC_API_KEY ? " + " : ""}${ANTHROPIC_API_KEY ? "Anthropic (fallback)" : ""}`);
 console.log(`  Poll: ${interval}ms | Puerto: ${BOT_PORT}`);
+console.log(`  Owner access key: ${OWNER_ACCESS_KEY ? "configurada" : "no configurada"}`);
 
-httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", () => {
+httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", async () => {
   console.log(`Bot escuchando en :${BOT_PORT}`);
+  await loadOwnerChatIds();
   tick();
   setInterval(tick, interval);
 });
