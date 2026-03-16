@@ -42,7 +42,6 @@ export function WhatsApp() {
             conversaciones={conversaciones}
             selectedChatId={selectedChatId}
             onSelectChat={setSelectedChatId}
-            onDeleteChat={deleteConversation}
             loading={loading}
           />
         </Card>
@@ -62,6 +61,7 @@ export function WhatsApp() {
             onBack={() => setSelectedChatId(null)}
             onToggleMode={toggleChatMode}
             onSendMessage={sendManualMessage}
+            onDeleteChat={deleteConversation}
           />
         </Card>
       </div>

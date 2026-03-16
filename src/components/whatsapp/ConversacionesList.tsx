@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Search, MessageCircle, Trash2 } from "lucide-react"
+import { Search, MessageCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { WhatsAppConversacion } from "@/types/database"
 
@@ -9,7 +9,6 @@ interface Props {
   conversaciones: WhatsAppConversacion[]
   selectedChatId: string | null
   onSelectChat: (chatId: string) => void
-  onDeleteChat: (chatId: string) => Promise<boolean>
   loading: boolean
 }
 
@@ -47,92 +46,10 @@ function formatTime(dateStr: string): string {
   })
 }
 
-function ChatItem({
-  conv,
-  isSelected,
-  onSelect,
-  onDelete,
-}: {
-  conv: WhatsAppConversacion
-  isSelected: boolean
-  onSelect: () => void
-  onDelete: () => void
-}) {
-  const [confirming, setConfirming] = useState(false)
-
-  return (
-    <div
-      className={cn(
-        "group relative flex items-center gap-3 p-3 cursor-pointer transition-colors",
-        isSelected ? "bg-muted" : "hover:bg-muted/50"
-      )}
-      onClick={() => {
-        if (confirming) return
-        onSelect()
-      }}
-    >
-      {/* Avatar */}
-      <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-        <span className="text-sm font-bold text-green-700">
-          {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
-        </span>
-      </div>
-
-      {/* Info */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium truncate">
-            {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
-          </p>
-          <span className="text-[10px] text-muted-foreground shrink-0">
-            {formatTime(conv.ultimo_mensaje_fecha)}
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground truncate mt-0.5">
-          {conv.ultimo_mensaje}
-        </p>
-      </div>
-
-      {/* Delete button - visible on hover (desktop) or always on mobile via group */}
-      {confirming ? (
-        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={() => {
-              onDelete()
-              setConfirming(false)
-            }}
-            className="px-2 py-1 text-[11px] font-medium bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
-          >
-            Borrar
-          </button>
-          <button
-            onClick={() => setConfirming(false)}
-            className="px-2 py-1 text-[11px] font-medium bg-muted text-muted-foreground rounded hover:bg-muted/80 transition-colors"
-          >
-            No
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            setConfirming(true)
-          }}
-          className="shrink-0 p-1.5 rounded text-muted-foreground/40 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 max-sm:opacity-60"
-          title="Borrar conversación"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      )}
-    </div>
-  )
-}
-
 export function ConversacionesList({
   conversaciones,
   selectedChatId,
   onSelectChat,
-  onDeleteChat,
   loading,
 }: Props) {
   const [search, setSearch] = useState("")
@@ -191,13 +108,38 @@ export function ConversacionesList({
         ) : (
           <div className="divide-y">
             {filtered.map((conv) => (
-              <ChatItem
+              <div
                 key={conv.chat_id}
-                conv={conv}
-                isSelected={selectedChatId === conv.chat_id}
-                onSelect={() => onSelectChat(conv.chat_id)}
-                onDelete={() => onDeleteChat(conv.chat_id)}
-              />
+                className={cn(
+                  "flex items-center gap-3 p-3 cursor-pointer transition-colors",
+                  selectedChatId === conv.chat_id
+                    ? "bg-muted"
+                    : "hover:bg-muted/50"
+                )}
+                onClick={() => onSelectChat(conv.chat_id)}
+              >
+                {/* Avatar */}
+                <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                  <span className="text-sm font-bold text-green-700">
+                    {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
+                  </span>
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium truncate">
+                      {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
+                    </p>
+                    <span className="text-[10px] text-muted-foreground shrink-0">
+                      {formatTime(conv.ultimo_mensaje_fecha)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">
+                    {conv.ultimo_mensaje}
+                  </p>
+                </div>
+              </div>
             ))}
           </div>
         )}
