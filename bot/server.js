@@ -33,6 +33,11 @@ if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// Helper para obtener fecha/hora en Argentina (UTC-3)
+function nowArgentina() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires" }));
+}
+
 const wahaHeaders = {
   "Content-Type": "application/json",
   ...(WAHA_API_KEY ? { "X-Api-Key": WAHA_API_KEY } : {}),
@@ -413,8 +418,8 @@ async function cancelarTurno(turnoId, clienteId) {
 const DIAS_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 
 function buildSystemPrompt(servicios, horarios) {
-  const hoy = new Date();
-  const fechaHoy = hoy.toISOString().split("T")[0];
+  const hoy = nowArgentina();
+  const fechaHoy = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(hoy.getDate()).padStart(2,"0")}`;
   const diaHoy = DIAS_ES[hoy.getDay()];
 
   const listaServicios = servicios.map(
@@ -470,8 +475,8 @@ FUNCIONES DISPONIBLES - Cuando el usuario quiera hacer algo, respondé con un JS
 
 REGLAS:
 - OBLIGATORIO: pedí nombre y apellido antes de agendar cualquier turno
-- No podés agendar en horarios que no estén disponibles
 - No agendés sin confirmar con el cliente el nombre completo, servicio, fecha y hora
+- Si el cliente quiere un turno en un día/horario cerrado o fuera de los horarios de atención, IGUALMENTE intentá agendar con la acción "agendar". El sistema se encarga de consultar al dueño por la excepción. NO le digas al cliente que no se puede, dejá que el sistema maneje la excepción.
 - Si después de 2 intentos no podés resolver lo que pide el cliente, usá la acción "escalate"
 - Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
 - Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
@@ -592,13 +597,48 @@ async function handleBotAction(action, negocioId, chatId, phone) {
       const diaSemana = new Date(fecha + "T12:00:00").getDay();
       const horarios = await getHorarios(negocioId);
       const horarioDia = horarios.find((h) => h.dia_semana === diaSemana);
-      if (!horarioDia || horarioDia.cerrado) return `Ese día (${DIAS_ES[diaSemana]}) estamos cerrados. ¿Querés elegir otro día?`;
+
+      if (!horarioDia || horarioDia.cerrado) {
+        // Día cerrado → notificar al dueño para posible excepción
+        const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
+        const nombre = cliente?.nombre || action.nombre || phone;
+        notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Ese día estamos cerrados. ¿Hacemos la excepción?`);
+        return `Ese día (${DIAS_ES[diaSemana]}) normalmente estamos cerrados, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+      }
 
       const turnos = await getTurnosDelDia(negocioId, fecha);
       const disponibles = calcularHorariosDisponibles(horarioDia, turnos, servicio.duracion_minutos);
       if (!disponibles.includes(hora)) {
         const sugerencias = disponibles.slice(0, 6).join(", ");
-        return `El horario ${hora} no está disponible para el ${fecha}. Horarios libres: ${sugerencias || "no hay disponibilidad ese día"}`;
+        if (!sugerencias) {
+          // No hay nada disponible → consultar al dueño
+          const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
+          const nombre = cliente?.nombre || action.nombre || phone;
+          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ No hay disponibilidad ese día. ¿Hacemos la excepción?`);
+          return `No tenemos disponibilidad ese día, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+        }
+        // Hay otros horarios → ofrecer alternativas pero también notificar si pidió fuera de rango
+        const horaNum = parseInt(hora.split(":")[0]) * 60 + parseInt(hora.split(":")[1]);
+        const bloques = [];
+        if (horarioDia.hora_apertura_manana) {
+          const [h,m] = horarioDia.hora_apertura_manana.split(":").map(Number);
+          const [hf,mf] = horarioDia.hora_cierre_manana.split(":").map(Number);
+          bloques.push({ desde: h*60+m, hasta: hf*60+mf });
+        }
+        if (horarioDia.hora_apertura_tarde) {
+          const [h,m] = horarioDia.hora_apertura_tarde.split(":").map(Number);
+          const [hf,mf] = horarioDia.hora_cierre_tarde.split(":").map(Number);
+          bloques.push({ desde: h*60+m, hasta: hf*60+mf });
+        }
+        const dentroDeHorario = bloques.some(b => horaNum >= b.desde && horaNum < b.hasta);
+        if (!dentroDeHorario) {
+          // Pidió fuera del rango de horarios → notificar al dueño
+          const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
+          const nombre = cliente?.nombre || action.nombre || phone;
+          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Fuera del horario de atención. ¿Hacemos la excepción?`);
+          return `Ese horario (${hora}) está fuera de nuestro horario de atención, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏\n\nSi querés, estos horarios sí están disponibles: ${sugerencias}`;
+        }
+        return `El horario ${hora} no está disponible para el ${fecha}. Horarios libres: ${sugerencias}`;
       }
 
       // Crear cliente si no existe
@@ -675,7 +715,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
       const diaSemana = new Date(fecha + "T12:00:00").getDay();
       const horarios = await getHorarios(negocioId);
       const horarioDia = horarios.find((h) => h.dia_semana === diaSemana);
-      if (!horarioDia || horarioDia.cerrado) return `El ${DIAS_ES[diaSemana]} ${fecha} estamos cerrados.`;
+      if (!horarioDia || horarioDia.cerrado) {
+        return `El ${DIAS_ES[diaSemana]} ${fecha} normalmente estamos cerrados. Si necesitás turno ese día, decime y le consulto al dueño si puede hacer una excepción.`;
+      }
 
       const turnos = await getTurnosDelDia(negocioId, fecha);
       const disponibles = calcularHorariosDisponibles(horarioDia, turnos, duracion);
@@ -787,7 +829,7 @@ async function pollIncomingMessages() {
     const chatId = typeof rawId === "string" ? rawId : String(rawId ?? "");
     if (!chatId.endsWith("@c.us") && !chatId.endsWith("@lid")) continue;
     const messages = await wahaFetch(
-      `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=false`
+      `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=true`
     );
     if (!messages || !Array.isArray(messages)) continue;
 

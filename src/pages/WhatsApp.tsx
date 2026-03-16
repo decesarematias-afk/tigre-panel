@@ -15,6 +15,7 @@ export function WhatsApp() {
     toggleChatMode,
     sendManualMessage,
     sendingMessage,
+    deleteConversation,
   } = useWhatsApp()
 
   // Encontrar nombre del contacto seleccionado
@@ -41,6 +42,7 @@ export function WhatsApp() {
             conversaciones={conversaciones}
             selectedChatId={selectedChatId}
             onSelectChat={setSelectedChatId}
+            onDeleteChat={deleteConversation}
             loading={loading}
           />
         </Card>

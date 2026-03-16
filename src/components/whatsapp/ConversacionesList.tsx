@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Search, MessageCircle } from "lucide-react"
+import { Search, MessageCircle, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { WhatsAppConversacion } from "@/types/database"
 
@@ -9,11 +9,11 @@ interface Props {
   conversaciones: WhatsAppConversacion[]
   selectedChatId: string | null
   onSelectChat: (chatId: string) => void
+  onDeleteChat: (chatId: string) => Promise<boolean>
   loading: boolean
 }
 
 function formatPhone(chatId: string): string {
-  // "5491165839170@c.us" → "+54 9 11 6583-9170"
   const num = chatId.replace("@c.us", "").replace("@s.whatsapp.net", "")
   if (num.length >= 12 && num.startsWith("549")) {
     const area = num.slice(3, 5)
@@ -47,10 +47,130 @@ function formatTime(dateStr: string): string {
   })
 }
 
+function SwipeableChatItem({
+  conv,
+  isSelected,
+  onSelect,
+  onDelete,
+}: {
+  conv: WhatsAppConversacion
+  isSelected: boolean
+  onSelect: () => void
+  onDelete: () => void
+}) {
+  const [offsetX, setOffsetX] = useState(0)
+  const touchStartX = useRef(0)
+  const touchStartY = useRef(0)
+  const isSwiping = useRef(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const DELETE_THRESHOLD = 70
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX
+    touchStartY.current = e.touches[0].clientY
+    isSwiping.current = false
+  }, [])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    const dx = e.touches[0].clientX - touchStartX.current
+    const dy = e.touches[0].clientY - touchStartY.current
+
+    // Si el movimiento vertical es mayor, no hacer swipe
+    if (!isSwiping.current && Math.abs(dy) > Math.abs(dx)) return
+
+    if (Math.abs(dx) > 10) isSwiping.current = true
+
+    if (isSwiping.current) {
+      // Solo permitir swipe a la izquierda (negativo)
+      const newOffset = Math.min(0, Math.max(-DELETE_THRESHOLD - 20, dx))
+      setOffsetX(newOffset)
+    }
+  }, [])
+
+  const handleTouchEnd = useCallback(() => {
+    if (offsetX < -DELETE_THRESHOLD) {
+      // Mantener abierto mostrando el botón de borrar
+      setOffsetX(-DELETE_THRESHOLD)
+    } else {
+      setOffsetX(0)
+    }
+    isSwiping.current = false
+  }, [offsetX])
+
+  const handleClick = useCallback(() => {
+    if (isSwiping.current) return
+    if (offsetX !== 0) {
+      setOffsetX(0)
+      return
+    }
+    onSelect()
+  }, [offsetX, onSelect])
+
+  return (
+    <div ref={containerRef} className="relative overflow-hidden">
+      {/* Delete button behind */}
+      <div className="absolute inset-y-0 right-0 flex items-center">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+            setOffsetX(0)
+          }}
+          className="h-full px-5 bg-red-500 text-white flex items-center gap-1.5 text-xs font-medium"
+        >
+          <Trash2 className="w-4 h-4" />
+          Borrar
+        </button>
+      </div>
+
+      {/* Swipeable content */}
+      <div
+        className={cn(
+          "relative flex items-center gap-3 p-3 text-left transition-colors bg-background",
+          isSelected && "bg-muted",
+          offsetX === 0 && "hover:bg-muted/50"
+        )}
+        style={{
+          transform: `translateX(${offsetX}px)`,
+          transition: isSwiping.current ? "none" : "transform 0.2s ease-out",
+        }}
+        onClick={handleClick}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {/* Avatar */}
+        <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+          <span className="text-sm font-bold text-green-700">
+            {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
+          </span>
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium truncate">
+              {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
+            </p>
+            <span className="text-[10px] text-muted-foreground shrink-0">
+              {formatTime(conv.ultimo_mensaje_fecha)}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground truncate mt-0.5">
+            {conv.ultimo_mensaje}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ConversacionesList({
   conversaciones,
   selectedChatId,
   onSelectChat,
+  onDeleteChat,
   loading,
 }: Props) {
   const [search, setSearch] = useState("")
@@ -109,36 +229,13 @@ export function ConversacionesList({
         ) : (
           <div className="divide-y">
             {filtered.map((conv) => (
-              <button
+              <SwipeableChatItem
                 key={conv.chat_id}
-                onClick={() => onSelectChat(conv.chat_id)}
-                className={cn(
-                  "w-full flex items-center gap-3 p-3 text-left hover:bg-muted/50 transition-colors",
-                  selectedChatId === conv.chat_id && "bg-muted"
-                )}
-              >
-                {/* Avatar */}
-                <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-                  <span className="text-sm font-bold text-green-700">
-                    {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
-                  </span>
-                </div>
-
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium truncate">
-                      {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
-                    </p>
-                    <span className="text-[10px] text-muted-foreground shrink-0">
-                      {formatTime(conv.ultimo_mensaje_fecha)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate mt-0.5">
-                    {conv.ultimo_mensaje}
-                  </p>
-                </div>
-              </button>
+                conv={conv}
+                isSelected={selectedChatId === conv.chat_id}
+                onSelect={() => onSelectChat(conv.chat_id)}
+                onDelete={() => onDeleteChat(conv.chat_id)}
+              />
             ))}
           </div>
         )}
