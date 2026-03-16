@@ -13,7 +13,6 @@ interface Props {
 }
 
 function formatPhone(chatId: string): string {
-  // "5491165839170@c.us" → "+54 9 11 6583-9170"
   const num = chatId.replace("@c.us", "").replace("@s.whatsapp.net", "")
   if (num.length >= 12 && num.startsWith("549")) {
     const area = num.slice(3, 5)
@@ -109,13 +108,15 @@ export function ConversacionesList({
         ) : (
           <div className="divide-y">
             {filtered.map((conv) => (
-              <button
+              <div
                 key={conv.chat_id}
-                onClick={() => onSelectChat(conv.chat_id)}
                 className={cn(
-                  "w-full flex items-center gap-3 p-3 text-left hover:bg-muted/50 transition-colors",
-                  selectedChatId === conv.chat_id && "bg-muted"
+                  "flex items-center gap-3 p-3 cursor-pointer transition-colors",
+                  selectedChatId === conv.chat_id
+                    ? "bg-muted"
+                    : "hover:bg-muted/50"
                 )}
+                onClick={() => onSelectChat(conv.chat_id)}
               >
                 {/* Avatar */}
                 <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
@@ -138,7 +139,7 @@ export function ConversacionesList({
                     {conv.ultimo_mensaje}
                   </p>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         )}

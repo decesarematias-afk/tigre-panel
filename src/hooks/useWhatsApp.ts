@@ -225,6 +225,40 @@ export function useWhatsApp() {
     }
   }, [negocio, selectedChatId, fetchConversaciones])
 
+  // Borrar conversación (todos los mensajes de ese chat)
+  const deleteConversation = useCallback(
+    async (chatId: string) => {
+      if (!negocio) return false
+
+      const { error } = await supabase
+        .from("whatsapp_mensajes")
+        .delete()
+        .eq("negocio_id", negocio.id)
+        .eq("chat_id", chatId)
+
+      if (error) {
+        console.error("Error borrando conversación:", error.message)
+        return false
+      }
+
+      // También borrar config del chat
+      await supabase
+        .from("whatsapp_chat_config")
+        .delete()
+        .eq("negocio_id", negocio.id)
+        .eq("chat_id", chatId)
+
+      // Limpiar UI
+      setConversaciones((prev) => prev.filter((c) => c.chat_id !== chatId))
+      if (selectedChatId === chatId) {
+        setSelectedChatId(null)
+        setMensajes([])
+      }
+      return true
+    },
+    [negocio, selectedChatId]
+  )
+
   return {
     conversaciones,
     mensajes,
@@ -235,6 +269,7 @@ export function useWhatsApp() {
     toggleChatMode,
     sendManualMessage,
     sendingMessage,
+    deleteConversation,
     refetch: fetchConversaciones,
   }
 }

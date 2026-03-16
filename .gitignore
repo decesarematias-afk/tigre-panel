@@ -33,3 +33,6 @@ fix_server.py
 
 # Supabase temp
 supabase/.temp/
+
+# Bot env (contiene service role key)
+bot/.env

@@ -6,6 +6,8 @@ import {
   SendHorizonal,
   User,
   Loader2,
+  AlertTriangle,
+  Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Switch } from "@/components/ui/switch"
@@ -20,6 +22,7 @@ interface Props {
   onBack?: () => void
   onToggleMode: (chatId: string) => void
   onSendMessage: (chatId: string, message: string) => Promise<boolean>
+  onDeleteChat: (chatId: string) => Promise<boolean>
 }
 
 function formatPhone(chatId: string): string {
@@ -60,11 +63,23 @@ function getDateKey(dateStr: string): string {
   return new Date(dateStr).toISOString().split("T")[0]
 }
 
+function isPendingTooLong(msg: WhatsAppMensaje): boolean {
+  if (msg.mensaje_tipo !== "manual_pending") return false
+  const elapsed = Date.now() - new Date(msg.created_at).getTime()
+  return elapsed > 30_000
+}
+
 function getMessageLabel(
   msg: WhatsAppMensaje
 ): { icon: typeof Bot; label: string; color: string } | null {
   if (msg.es_entrante) return null
-  if (msg.mensaje_tipo === "manual" || msg.mensaje_tipo === "manual_pending") {
+  if (msg.mensaje_tipo === "manual_pending") {
+    if (isPendingTooLong(msg)) {
+      return { icon: AlertTriangle, label: "Sin enviar", color: "red" }
+    }
+    return { icon: User, label: "Enviando...", color: "blue" }
+  }
+  if (msg.mensaje_tipo === "manual") {
     return { icon: User, label: "Manual", color: "blue" }
   }
   if (msg.mensaje_tipo === "manual_error") {
@@ -82,9 +97,20 @@ export function ChatThread({
   onBack,
   onToggleMode,
   onSendMessage,
+  onDeleteChat,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [inputMessage, setInputMessage] = useState("")
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [, setTick] = useState(0)
+
+  // Re-render periodically to update stale pending message indicators
+  const hasPending = mensajes.some((m) => m.mensaje_tipo === "manual_pending")
+  useEffect(() => {
+    if (!hasPending) return
+    const interval = setInterval(() => setTick((t) => t + 1), 10_000)
+    return () => clearInterval(interval)
+  }, [hasPending])
 
   // Auto-scroll al fondo
   useEffect(() => {
@@ -178,7 +204,42 @@ export function ChatThread({
             className="data-[state=checked]:bg-orange-500"
           />
         </div>
+
+        {/* Eliminar chat */}
+        <button
+          onClick={() => setShowDeleteConfirm(true)}
+          className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
+          title="Eliminar chat"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
       </div>
+
+      {/* Confirmación de eliminar */}
+      {showDeleteConfirm && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-red-50 border-b border-red-200">
+          <p className="text-sm text-red-700">
+            ¿Eliminar esta conversación y todos sus mensajes?
+          </p>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={async () => {
+                await onDeleteChat(selectedChatId)
+                setShowDeleteConfirm(false)
+              }}
+              className="px-3 py-1.5 text-xs font-medium bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+            >
+              Eliminar
+            </button>
+            <button
+              onClick={() => setShowDeleteConfirm(false)}
+              className="px-3 py-1.5 text-xs font-medium bg-white text-muted-foreground rounded-md border hover:bg-muted/50 transition-colors"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Mensajes */}
       <div

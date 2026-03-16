@@ -1,0 +1,39 @@
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - WAHA_DEFAULT_SESSION=default
+      - WAHA_API_KEY=condi
+      - WAHA_SESSION_START_RETRY_INTERVAL=5
+      - WAHA_SESSION_START_RETRY_COUNT=3
+      - TZ=America/Argentina/Buenos_Aires
+    volumes:
+      - waha_data:/app/.sessions
+    networks:
+      - whatsapp-network
+
+  whatsapp-server:
+    build: .
+    container_name: whatsapp-server
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      - TZ=America/Argentina/Buenos_Aires
+    depends_on:
+      - waha
+    networks:
+      - whatsapp-network
+
+volumes:
+  waha_data:
+
+networks:
+  whatsapp-network:
+    driver: bridge

@@ -18,12 +18,12 @@ export function StatsCards({ turnos }: StatsCardsProps) {
     const completados = turnosHoy.filter((t) => t.estado === "completado").length
     const pendientes = turnosHoy.filter((t) => t.estado === "pendiente").length
 
-    // Ingresos: solo turnos cobrados de hoy
-    const ingresosHoy = turnosHoy
-      .filter((t) => t.cobrado)
+    // Ingresos: todos los cobros registrados hoy (sin importar fecha del turno)
+    const ingresosHoy = turnos
+      .filter((t) => t.cobrado && t.updated_at?.startsWith(hoy))
       .reduce((sum, t) => sum + (t.monto_cobrado ?? t.servicio?.precio ?? 0), 0)
 
-    // Ingresos esperados: confirmados + pendientes (no cancelados, no cobrados)
+    // Ingresos esperados: turnos de hoy no cobrados y no cancelados
     const ingresosEsperados = turnosHoy
       .filter((t) => !t.cobrado && t.estado !== "cancelado")
       .reduce((sum, t) => sum + (t.servicio?.precio ?? 0), 0)
