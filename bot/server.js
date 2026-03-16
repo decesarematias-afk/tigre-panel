@@ -884,9 +884,16 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
   const systemPrompt = isOwner
     ? buildOwnerSystemPrompt(servicios, horarios)
     : buildSystemPrompt(servicios, horarios);
+
+  // Para el dueño, descartar historial viejo donde fue tratado como cliente
+  // Solo usar mensajes recientes que ya tengan contexto de dueño
+  const ownerHistoryCleaned = isOwner
+    ? history.filter((m) => !(m.role === "assistant" && (m.content.includes("¿Cómo puedo ayudarte hoy?") || m.content.includes("ofrecemos el servicio") || m.content.includes("¿Querés agendar"))))
+    : history;
+  const relevantHistory = isOwner ? ownerHistoryCleaned.slice(-4) : ownerHistoryCleaned;
   const messages = [
     { role: "system", content: systemPrompt },
-    ...history,
+    ...relevantHistory,
   ];
 
   // Asegurar que messages termine con el mensaje actual del usuario
