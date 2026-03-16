@@ -73,6 +73,43 @@ async function wahaFetch(path, options = {}) {
   }
 }
 
+// Descargar media desde URL de WAHA (Community devuelve url, no base64)
+async function fetchMediaFromUrl(mediaUrl, mimetype) {
+  try {
+    // WAHA devuelve URLs con localhost pero dentro de Docker necesitamos usar el host interno
+    let fetchUrl = mediaUrl;
+    try {
+      const parsed = new URL(mediaUrl);
+      const wahaBase = new URL(WAHA_API_URL);
+      parsed.hostname = wahaBase.hostname;
+      parsed.port = wahaBase.port;
+      parsed.protocol = wahaBase.protocol;
+      fetchUrl = parsed.toString();
+    } catch { /* usar URL original si no se puede parsear */ }
+
+    console.log(`[AUDIO] Fetching media from URL: ${fetchUrl}`);
+    const res = await fetch(fetchUrl, {
+      headers: WAHA_API_KEY ? { "X-Api-Key": WAHA_API_KEY } : {},
+    });
+    if (!res.ok) {
+      console.error(`[AUDIO] URL fetch failed ${res.status}: ${await res.text().catch(() => "")}`);
+      return null;
+    }
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0) {
+      console.error("[AUDIO] URL fetch returned empty body");
+      return null;
+    }
+    return {
+      data: Buffer.from(buf).toString("base64"),
+      mimetype: mimetype || res.headers.get("content-type") || "audio/ogg",
+    };
+  } catch (err) {
+    console.error(`[AUDIO] fetchMediaFromUrl error: ${err.message}`);
+    return null;
+  }
+}
+
 async function sendWhatsApp(chatId, text) {
   return wahaFetch("/api/sendText", {
     method: "POST",
@@ -125,31 +162,33 @@ async function transcribeAudio(waMessageId, chatId, msgMedia) {
   try {
     let media = null;
 
-    // 1) Media inline del polling
-    if (msgMedia?.data) {
-      console.log(`[AUDIO] Usando media inline (mimetype: ${msgMedia.mimetype})`);
+    // 0) Media URL del polling (WAHA Community devuelve url, no base64)
+    if (!media?.data && msgMedia?.url) {
+      console.log(`[AUDIO] Descargando desde media.url: ${msgMedia.url}`);
+      media = await fetchMediaFromUrl(msgMedia.url, msgMedia.mimetype);
+    }
+
+    // 1) Media base64 inline (WAHA Plus/Pro)
+    if (!media?.data && msgMedia?.data) {
+      console.log(`[AUDIO] Usando media inline base64 (mimetype: ${msgMedia.mimetype})`);
       media = { data: msgMedia.data, mimetype: msgMedia.mimetype || "audio/ogg" };
     }
 
-    // 2) Download por message ID (URL-encoded por si tiene @)
+    // 2) Download por message ID
     if (!media?.data) {
       const encodedId = encodeURIComponent(waMessageId);
       console.log(`[AUDIO] Intento download por msgId: ${waMessageId}`);
       const dl = await wahaFetch(`/api/${WAHA_SESSION}/messages/${encodedId}/download`);
       if (dl?.data) {
         media = { data: dl.data, mimetype: dl.mimetype || "audio/ogg" };
-        console.log(`[AUDIO] Descargado via messages/{id}/download`);
+        console.log(`[AUDIO] Descargado via messages/{id}/download (base64)`);
       } else if (dl?.url) {
-        console.log(`[AUDIO] Download devolvió URL: ${dl.url}`);
-        const urlRes = await fetch(dl.url);
-        if (urlRes.ok) {
-          const buf = await urlRes.arrayBuffer();
-          media = { data: Buffer.from(buf).toString("base64"), mimetype: dl.mimetype || "audio/ogg" };
-        }
+        media = await fetchMediaFromUrl(dl.url, dl.mimetype);
+        if (media) console.log(`[AUDIO] Descargado via messages/{id}/download (URL)`);
       }
     }
 
-    // 3) Re-fetch del chat con downloadMedia=true (método más confiable)
+    // 3) Re-fetch del chat con downloadMedia=true
     if (!media?.data) {
       console.log(`[AUDIO] Re-fetching chat ${chatId} con downloadMedia=true`);
       const refetched = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=true`);
@@ -160,20 +199,22 @@ async function transcribeAudio(waMessageId, chatId, msgMedia) {
           return String(mid) === waMessageId;
         });
         // Fallback: buscar el audio más reciente no procesado
-        if (!found?.media?.data) {
+        if (!found?.media?.data && !found?.media?.url) {
           found = refetched.find(m => {
             const mid = String(m.id?._serialized || m.id || "");
             const isAudioMsg = m.type === "ptt" || m.type === "audio" || m.type === "voice";
-            return isAudioMsg && m.media?.data && !m.fromMe && !processedMessages.has(mid);
+            return isAudioMsg && (m.media?.data || m.media?.url) && !m.fromMe && !processedMessages.has(mid);
           });
           if (found) console.log(`[AUDIO] Match por tipo audio (fallback)`);
         }
         if (found?.media?.data) {
           media = { data: found.media.data, mimetype: found.media.mimetype || "audio/ogg" };
-          console.log(`[AUDIO] Obtenido via re-fetch con downloadMedia=true`);
+          console.log(`[AUDIO] Obtenido via re-fetch (base64)`);
+        } else if (found?.media?.url) {
+          media = await fetchMediaFromUrl(found.media.url, found.media.mimetype);
+          if (media) console.log(`[AUDIO] Obtenido via re-fetch (URL)`);
         } else {
-          // Log qué devolvió para debug
-          const types = refetched.map(m => `${m.type}(media:${!!m.media?.data})`).join(", ");
+          const types = refetched.map(m => `${m.type}(data:${!!m.media?.data},url:${!!m.media?.url})`).join(", ");
           console.warn(`[AUDIO] Re-fetch no encontró audio. Mensajes: [${types}]`);
         }
       }
@@ -186,6 +227,9 @@ async function transcribeAudio(waMessageId, chatId, msgMedia) {
       if (dl?.data) {
         media = { data: dl.data, mimetype: dl.mimetype || "audio/ogg" };
         console.log(`[AUDIO] Descargado via chats/{chatId}/messages/{id}/download`);
+      } else if (dl?.url) {
+        media = await fetchMediaFromUrl(dl.url, dl.mimetype);
+        if (media) console.log(`[AUDIO] Descargado via chats download (URL)`);
       }
     }
 
@@ -840,8 +884,9 @@ async function pollIncomingMessages() {
       const waMessageId = typeof rawMsgId === "string" ? rawMsgId : String(rawMsgId ?? "");
       if (!waMessageId || processedMessages.has(waMessageId)) continue;
 
+      const hasMediaContent = msg.hasMedia || msg.media?.url || msg.media?.data;
       const isAudio = msg.type === "ptt" || msg.type === "audio" || msg.type === "voice"
-        || (msg.hasMedia && !msg.body && (!msg.media?.mimetype || msg.media.mimetype.startsWith("audio")));
+        || (hasMediaContent && !msg.body && (!msg.media?.mimetype || msg.media.mimetype.startsWith("audio")));
 
       if (!msg.body && !msg.text && !isAudio) {
         // Skip non-text, non-audio (images, stickers, etc)
@@ -865,7 +910,7 @@ async function pollIncomingMessages() {
       // Transcribir audio si es necesario
       let texto = msg.body || msg.text || "";
       if (isAudio) {
-        console.log(`[AUDIO] Detectado audio: type=${msg.type} hasMedia=${msg.hasMedia} media=${!!msg.media?.data}`);
+        console.log(`[AUDIO] Detectado audio: type=${msg.type} hasMedia=${msg.hasMedia} data=${!!msg.media?.data} url=${!!msg.media?.url} mediaUrl=${msg.media?.url?.slice(0,80) || "none"}`);
         const transcripcion = await transcribeAudio(waMessageId, chatId, msg.media);
         if (transcripcion) {
           texto = transcripcion;
