@@ -118,51 +118,74 @@ async function transcribeAudio(waMessageId, chatId, msgMedia) {
   if (!OPENAI_API_KEY) return null;
 
   try {
-    // Primero intentar usar media ya incluida en el mensaje
     let media = null;
+
+    // 1) Media inline del polling
     if (msgMedia?.data) {
       console.log(`[AUDIO] Usando media inline (mimetype: ${msgMedia.mimetype})`);
       media = { data: msgMedia.data, mimetype: msgMedia.mimetype || "audio/ogg" };
     }
 
-    // Si no hay data inline, descargar de WAHA
+    // 2) Download por message ID (URL-encoded por si tiene @)
     if (!media?.data) {
-      console.log(`[AUDIO] Descargando media: ${waMessageId}`);
-      media = await wahaFetch(`/api/${WAHA_SESSION}/messages/${waMessageId}/download`);
-    }
-
-    if (!media?.data) {
-      // Intentar endpoint alternativo con chatId
-      media = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages/${waMessageId}/download`);
-    }
-
-    if (!media?.data) {
-      // Intentar con downloadMedia=true re-fetching el mensaje
-      const refetched = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=true`);
-      if (Array.isArray(refetched)) {
-        const found = refetched.find(m => {
-          const mid = m.id?._serialized || m.id;
-          return String(mid) === waMessageId;
-        });
-        if (found?.media?.data) {
-          media = { data: found.media.data, mimetype: found.media.mimetype || "audio/ogg" };
-          console.log(`[AUDIO] Obtenido via re-fetch con downloadMedia=true`);
+      const encodedId = encodeURIComponent(waMessageId);
+      console.log(`[AUDIO] Intento download por msgId: ${waMessageId}`);
+      const dl = await wahaFetch(`/api/${WAHA_SESSION}/messages/${encodedId}/download`);
+      if (dl?.data) {
+        media = { data: dl.data, mimetype: dl.mimetype || "audio/ogg" };
+        console.log(`[AUDIO] Descargado via messages/{id}/download`);
+      } else if (dl?.url) {
+        console.log(`[AUDIO] Download devolvió URL: ${dl.url}`);
+        const urlRes = await fetch(dl.url);
+        if (urlRes.ok) {
+          const buf = await urlRes.arrayBuffer();
+          media = { data: Buffer.from(buf).toString("base64"), mimetype: dl.mimetype || "audio/ogg" };
         }
       }
     }
 
-    if (!media?.data && media?.url) {
-      // Algunos WAHA devuelven URL en vez de data
-      console.log(`[AUDIO] Descargando desde URL: ${media.url}`);
-      const urlRes = await fetch(media.url);
-      if (urlRes.ok) {
-        const buf = await urlRes.arrayBuffer();
-        media = { data: Buffer.from(buf).toString("base64"), mimetype: "audio/ogg" };
+    // 3) Re-fetch del chat con downloadMedia=true (método más confiable)
+    if (!media?.data) {
+      console.log(`[AUDIO] Re-fetching chat ${chatId} con downloadMedia=true`);
+      const refetched = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=true`);
+      if (Array.isArray(refetched)) {
+        // Buscar por ID exacto
+        let found = refetched.find(m => {
+          const mid = m.id?._serialized || m.id;
+          return String(mid) === waMessageId;
+        });
+        // Fallback: buscar el audio más reciente no procesado
+        if (!found?.media?.data) {
+          found = refetched.find(m => {
+            const mid = String(m.id?._serialized || m.id || "");
+            const isAudioMsg = m.type === "ptt" || m.type === "audio" || m.type === "voice";
+            return isAudioMsg && m.media?.data && !m.fromMe && !processedMessages.has(mid);
+          });
+          if (found) console.log(`[AUDIO] Match por tipo audio (fallback)`);
+        }
+        if (found?.media?.data) {
+          media = { data: found.media.data, mimetype: found.media.mimetype || "audio/ogg" };
+          console.log(`[AUDIO] Obtenido via re-fetch con downloadMedia=true`);
+        } else {
+          // Log qué devolvió para debug
+          const types = refetched.map(m => `${m.type}(media:${!!m.media?.data})`).join(", ");
+          console.warn(`[AUDIO] Re-fetch no encontró audio. Mensajes: [${types}]`);
+        }
+      }
+    }
+
+    // 4) Endpoint alternativo chat-scoped download
+    if (!media?.data) {
+      const encodedId = encodeURIComponent(waMessageId);
+      const dl = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages/${encodedId}/download`);
+      if (dl?.data) {
+        media = { data: dl.data, mimetype: dl.mimetype || "audio/ogg" };
+        console.log(`[AUDIO] Descargado via chats/{chatId}/messages/{id}/download`);
       }
     }
 
     if (!media?.data) {
-      console.error("[AUDIO] No se pudo descargar el media. Response:", JSON.stringify(media)?.slice(0, 200));
+      console.error("[AUDIO] No se pudo descargar el media después de todos los intentos");
       return null;
     }
 
