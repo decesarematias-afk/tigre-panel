@@ -75,6 +75,45 @@ async function sendWhatsApp(chatId, text) {
   });
 }
 
+// Cache de resolución LID -> teléfono real
+const phoneCache = new Map();
+
+async function getPhoneFromChat(chatId) {
+  if (phoneCache.has(chatId)) return phoneCache.get(chatId);
+
+  // Si es @c.us, el user ES el teléfono
+  if (chatId.endsWith("@c.us")) {
+    const phone = chatId.replace("@c.us", "");
+    phoneCache.set(chatId, phone);
+    return phone;
+  }
+
+  // Para @lid, consultar WAHA contacts API
+  try {
+    const contact = await wahaFetch(`/api/${WAHA_SESSION}/contacts/${chatId}`);
+    if (contact?.number) {
+      const phone = String(contact.number).replace(/\D/g, "");
+      console.log(`[CONTACT] ${chatId} -> phone: ${phone}`);
+      phoneCache.set(chatId, phone);
+      return phone;
+    }
+    // Intentar con el profile
+    const profile = await wahaFetch(`/api/${WAHA_SESSION}/contacts/${chatId}/about`);
+    if (profile?.number) {
+      const phone = String(profile.number).replace(/\D/g, "");
+      phoneCache.set(chatId, phone);
+      return phone;
+    }
+  } catch (err) {
+    console.error("[CONTACT] Error resolving phone:", err.message);
+  }
+
+  // Fallback: usar el ID numérico (puede no ser teléfono real)
+  const fallback = chatId.replace(/@c\.us$|@lid$/, "");
+  phoneCache.set(chatId, fallback);
+  return fallback;
+}
+
 async function transcribeAudio(waMessageId) {
   if (!OPENAI_API_KEY) return null;
 
@@ -346,9 +385,10 @@ ${listaHorarios || "No hay horarios configurados"}
 
 FUNCIONES DISPONIBLES - Cuando el usuario quiera hacer algo, respondé con un JSON de acción:
 
-1. AGENDAR TURNO: Cuando el usuario quiera un turno, necesitás: servicio, fecha y hora.
-   Si falta info, preguntá. Cuando tengas todo, respondé SOLO con:
-   {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"nombre del cliente si lo dijo"}
+1. AGENDAR TURNO: Necesitás: nombre completo (nombre y apellido), servicio, fecha y hora.
+   SIEMPRE pedí nombre y apellido del cliente antes de agendar. Sin nombre completo NO agendés.
+   Cuando tengas todo, respondé SOLO con:
+   {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"Nombre Apellido del cliente"}
 
 2. VER TURNOS: Si preguntan por sus turnos:
    {"action":"mis_turnos"}
@@ -365,8 +405,9 @@ FUNCIONES DISPONIBLES - Cuando el usuario quiera hacer algo, respondé con un JS
    {"action":"escalate","motivo":"breve descripción del problema"}
 
 REGLAS:
+- OBLIGATORIO: pedí nombre y apellido antes de agendar cualquier turno
 - No podés agendar en horarios que no estén disponibles
-- No agendés sin confirmar con el cliente el servicio, fecha y hora
+- No agendés sin confirmar con el cliente el nombre completo, servicio, fecha y hora
 - Si después de 2 intentos no podés resolver lo que pide el cliente, usá la acción "escalate"
 - Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
 - Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
@@ -598,7 +639,7 @@ async function handleBotAction(action, negocioId, chatId, phone) {
 // ─── Lógica principal del bot ────────────────────────────
 
 async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
-  const phone = chatId.replace(/@c\.us$|@lid$/, "");
+  const phone = await getPhoneFromChat(chatId);
 
   // Verificar modo del chat (bot vs manual)
   const { data: config } = await supabase
@@ -728,7 +769,7 @@ async function pollIncomingMessages() {
           continue;
         }
       }
-      const phone = chatId.replace(/@c\.us$|@lid$/, "");
+      const phone = await getPhoneFromChat(chatId);
       const timestamp = msg.timestamp
         ? new Date(msg.timestamp * 1000).toISOString()
         : new Date().toISOString();
@@ -813,6 +854,7 @@ const notifiedCancellations = new Set();
 async function checkPanelCancellations() {
   if (!healthy) return;
 
+  try {
   const negocioId = await getNegocioId();
   if (!negocioId) return;
 
@@ -872,6 +914,9 @@ async function checkPanelCancellations() {
         cliente_id: turno.cliente_id,
       });
     }
+  }
+  } catch (err) {
+    console.error("[CANCEL-CHECK] Error:", err.message);
   }
 }
 
