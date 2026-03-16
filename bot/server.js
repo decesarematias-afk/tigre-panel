@@ -521,7 +521,7 @@ async function handleBotAction(action, negocioId, chatId, phone) {
 // ─── Lógica principal del bot ────────────────────────────
 
 async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
-  const phone = chatId.replace("@c.us", "");
+  const phone = chatId.replace(/@c\.us$|@lid$/, "");
 
   // Verificar modo del chat (bot vs manual)
   const { data: config } = await supabase
@@ -603,7 +603,7 @@ async function pollIncomingMessages() {
     // WAHA puede devolver id como string o como objeto {_serialized: "...@c.us"}
     const rawId = chat.id?._serialized || chat.id;
     const chatId = typeof rawId === "string" ? rawId : String(rawId ?? "");
-    if (!chatId.endsWith("@c.us")) continue;
+    if (!chatId.endsWith("@c.us") && !chatId.endsWith("@lid")) continue;
     const messages = await wahaFetch(
       `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=false`
     );
@@ -631,7 +631,7 @@ async function pollIncomingMessages() {
       }
 
       const texto = msg.body || msg.text || "";
-      const phone = chatId.replace("@c.us", "");
+      const phone = chatId.replace(/@c\.us$|@lid$/, "");
       const timestamp = msg.timestamp
         ? new Date(msg.timestamp * 1000).toISOString()
         : new Date().toISOString();
