@@ -19,6 +19,7 @@ const {
   NEGOCIO_NOMBRE = "Cruz Barber Studio",
   NEGOCIO_DIRECCION = "",
   NEGOCIO_TELEFONO = "",
+  OWNER_PHONE = "5491159027202",
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -41,6 +42,7 @@ const wahaHeaders = {
 let healthy = false;
 const processedMessages = new Set(); // wa_message_ids ya procesados
 const sentReminders = new Set(); // turno IDs con recordatorio enviado
+const botCancelledTurnos = new Set(); // turno IDs cancelados por el bot (no notificar como panel)
 
 // Cache de servicios y horarios (evita queries repetidas)
 const dataCache = { servicios: null, horarios: null, ts: 0 };
@@ -71,6 +73,14 @@ async function sendWhatsApp(chatId, text) {
     method: "POST",
     body: JSON.stringify({ session: WAHA_SESSION, chatId, text }),
   });
+}
+
+async function notifyOwner(text) {
+  if (!OWNER_PHONE) return;
+  const chatId = `${OWNER_PHONE}@lid`;
+  const sent = await sendWhatsApp(chatId, text);
+  if (sent) console.log(`📢 Owner notificado: "${text.slice(0, 60)}..."`);
+  return sent;
 }
 
 async function checkWahaSession() {
@@ -311,10 +321,13 @@ FUNCIONES DISPONIBLES - Cuando el usuario quiera hacer algo, respondé con un JS
 
 5. VER PRECIOS: Si preguntan precios, respondé directamente con la lista.
 
+6. HABLAR CON UNA PERSONA: Si el cliente pide hablar con alguien, tiene un reclamo, un problema que no podés resolver, o necesita atención humana:
+   {"action":"escalate","motivo":"breve descripción del problema"}
+
 REGLAS:
 - No podés agendar en horarios que no estén disponibles
 - No agendés sin confirmar con el cliente el servicio, fecha y hora
-- Si preguntan algo que no podés resolver, sugerí que se comuniquen directamente al local
+- Si después de 2 intentos no podés resolver lo que pide el cliente, usá la acción "escalate"
 - Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
 - Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
 }
@@ -477,7 +490,20 @@ async function handleBotAction(action, negocioId, chatId, phone) {
       if (!cliente) return "No encontré turnos para cancelar.";
 
       if (action.turno_id) {
+        // Obtener info del turno antes de cancelar para notificar
+        const { data: turnoInfo } = await supabase
+          .from("turnos")
+          .select("fecha, hora_inicio, servicio:servicios(nombre)")
+          .eq("id", action.turno_id)
+          .single();
+
         const ok = await cancelarTurno(action.turno_id, cliente.id);
+        if (ok) {
+          botCancelledTurnos.add(action.turno_id);
+          if (turnoInfo) {
+            notifyOwner(`❌ *Turno cancelado por cliente*\n\n👤 ${cliente.nombre || phone}\n📅 ${turnoInfo.fecha} ⏰ ${turnoInfo.hora_inicio?.slice(0,5)}\n✂️ ${turnoInfo.servicio?.nombre || "Servicio"}`);
+          }
+        }
         return ok ? "✅ Turno cancelado." : "No pude cancelar ese turno. Verificá el ID.";
       }
 
@@ -512,6 +538,16 @@ async function handleBotAction(action, negocioId, chatId, phone) {
       if (!disponibles.length) return `No hay horarios disponibles el ${fecha}. ¿Otro día?`;
 
       return `📅 *Horarios disponibles el ${fecha}* (${DIAS_ES[diaSemana]})${servicio ? ` para ${servicio.nombre}` : ""}:\n\n${disponibles.join(" | ")}\n\n¿Cuál te queda bien?`;
+    }
+
+    case "escalate": {
+      const cliente = await getOrCreateCliente(negocioId, phone, null);
+      const nombre = cliente?.nombre || phone;
+      const motivo = action.motivo || "No especificado";
+
+      notifyOwner(`🆘 *Cliente necesita atención*\n\n👤 ${nombre}\n📱 ${phone}\n💬 Motivo: ${motivo}\n\nPodés responderle directo al ${phone}.`);
+
+      return `Entendido, ya le avisé a la persona encargada. Te va a contactar en breve. ¡Disculpá las molestias!`;
     }
 
     default:
@@ -710,6 +746,75 @@ async function processPendingMessages() {
   }
 }
 
+// ─── Detección de cancelaciones desde el panel ───────────
+
+const notifiedCancellations = new Set();
+
+async function checkPanelCancellations() {
+  if (!healthy) return;
+
+  const negocioId = await getNegocioId();
+  if (!negocioId) return;
+
+  // Buscar turnos cancelados en los últimos 5 minutos que no se notificaron
+  const cincoMinAtras = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+  const { data: turnos } = await supabase
+    .from("turnos")
+    .select("id, fecha, hora_inicio, hora_fin, cliente_id, updated_at, servicio:servicios(nombre)")
+    .eq("negocio_id", negocioId)
+    .eq("estado", "cancelado")
+    .gte("updated_at", cincoMinAtras);
+
+  if (!turnos?.length) return;
+
+  for (const turno of turnos) {
+    if (notifiedCancellations.has(turno.id)) continue;
+    if (botCancelledTurnos.has(turno.id)) { notifiedCancellations.add(turno.id); continue; }
+
+    const { data: cliente } = await supabase
+      .from("clientes")
+      .select("telefono, nombre")
+      .eq("id", turno.cliente_id)
+      .single();
+
+    if (!cliente?.telefono) { notifiedCancellations.add(turno.id); continue; }
+
+    const chatId = `${cliente.telefono}@lid`;
+
+    // Buscar disponibilidad para ofrecer reprogramación
+    const diaSemana = new Date(turno.fecha + "T12:00:00").getDay();
+    const horarios = await getHorarios(negocioId);
+    const horarioDia = horarios.find((h) => h.dia_semana === diaSemana);
+
+    let slotsMsg = "";
+    if (horarioDia && !horarioDia.cerrado) {
+      const turnosDelDia = await getTurnosDelDia(negocioId, turno.fecha);
+      const disponibles = calcularHorariosDisponibles(horarioDia, turnosDelDia, 30);
+      if (disponibles.length) {
+        slotsMsg = `\n\n📅 Horarios disponibles para el mismo día:\n${disponibles.slice(0, 6).join(" | ")}\n\n¿Querés reprogramar? Decime qué horario te queda bien.`;
+      }
+    }
+
+    const mensaje = `Hola${cliente.nombre ? ` ${cliente.nombre}` : ""}, te avisamos que tu turno del ${turno.fecha} a las ${turno.hora_inicio?.slice(0, 5)} (${turno.servicio?.nombre || "Servicio"}) fue cancelado por motivos personales. Disculpá las molestias.${slotsMsg || "\n\n¿Querés agendar otro turno? Decime qué día y horario te queda bien."}`;
+
+    const sent = await sendWhatsApp(chatId, mensaje);
+    if (sent) {
+      notifiedCancellations.add(turno.id);
+      console.log(`📢 Cancelación panel -> ${cliente.telefono}: turno ${turno.fecha} ${turno.hora_inicio?.slice(0, 5)}`);
+
+      await supabase.from("whatsapp_mensajes").insert({
+        negocio_id: negocioId,
+        chat_id: chatId,
+        mensaje,
+        es_entrante: false,
+        mensaje_tipo: "bot",
+        cliente_id: turno.cliente_id,
+      });
+    }
+  }
+}
+
 // ─── Recordatorios automáticos (2h antes) ────────────────
 
 async function sendReminders() {
@@ -796,6 +901,7 @@ async function tick() {
     await processPendingMessages();
     await pollIncomingMessages();
     await sendReminders();
+    await checkPanelCancellations();
   } catch (err) {
     console.error("[TICK ERROR]", err.message, err.stack);
   } finally {
@@ -810,6 +916,7 @@ setInterval(() => {
     console.log("Cache de mensajes limpiado");
   }
   sentReminders.clear();
+  notifiedCancellations.clear();
 }, 600_000);
 
 console.log(`Cruz Barber WhatsApp Bot v2.0`);
