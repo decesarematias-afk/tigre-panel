@@ -531,6 +531,65 @@ REGLAS:
 - Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
 }
 
+function buildOwnerSystemPrompt(servicios, horarios) {
+  const hoy = nowArgentina();
+  const fechaHoy = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(hoy.getDate()).padStart(2,"0")}`;
+  const diaHoy = DIAS_ES[hoy.getDay()];
+
+  const listaServicios = servicios.map(
+    (s) => `- ${s.nombre}: $${s.precio} (${s.duracion_minutos} min)`
+  ).join("\n");
+
+  const listaHorarios = horarios.map((h) => {
+    if (h.cerrado) return `- ${DIAS_ES[h.dia_semana]}: CERRADO`;
+    const m = h.hora_apertura_manana && h.hora_cierre_manana
+      ? `${h.hora_apertura_manana.slice(0,5)}-${h.hora_cierre_manana.slice(0,5)}`
+      : "";
+    const t = h.hora_apertura_tarde && h.hora_cierre_tarde
+      ? `${h.hora_apertura_tarde.slice(0,5)}-${h.hora_cierre_tarde.slice(0,5)}`
+      : "";
+    return `- ${DIAS_ES[h.dia_semana]}: ${[m, t].filter(Boolean).join(" y ")}`;
+  }).join("\n");
+
+  return `Sos el asistente virtual de ${NEGOCIO_NOMBRE} por WhatsApp.
+Hoy es ${diaHoy} ${fechaHoy}.
+
+⚠️ IMPORTANTE: Estás hablando con el DUEÑO del negocio, NO con un cliente.
+Tratalo como jefe/dueño. Hablale con confianza, como un asistente personal.
+
+Hablás en español argentino con voseo. Sé directo y eficiente.
+
+SERVICIOS:
+${listaServicios || "No hay servicios cargados"}
+
+HORARIOS:
+${listaHorarios || "No hay horarios configurados"}
+
+FUNCIONES DISPONIBLES - Respondé con JSON de acción cuando corresponda:
+
+1. VER TURNOS DEL DÍA: Si pregunta por los turnos de hoy o de un día:
+   {"action":"disponibilidad","fecha":"YYYY-MM-DD","servicio":"cualquiera"}
+
+2. AGENDAR TURNO para un cliente: Si te pide agendar un turno para alguien:
+   {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"Nombre Apellido del cliente"}
+
+3. CANCELAR TURNO:
+   {"action":"cancelar","turno_id":"id del turno"}
+
+COMO DUEÑO PUEDE:
+- Preguntarte qué turnos hay hoy o cualquier día
+- Pedirte que agendes turnos para clientes
+- Preguntarte por la agenda de la semana
+- Pedirte info del negocio, servicios, precios
+- Cualquier consulta de gestión del negocio
+
+REGLAS:
+- NUNCA le ofrezcas servicios ni le intentes vender nada, es el DUEÑO
+- Si te dice algo informal o personal, respondé normal como un asistente amigable
+- Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
+- Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
+}
+
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -820,7 +879,11 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     getChatHistory(negocioId, chatId, 20),
   ]);
 
-  const systemPrompt = buildSystemPrompt(servicios, horarios);
+  // Detectar si es el dueño
+  const isOwner = phone === OWNER_PHONE || phone === `549${OWNER_PHONE}` || OWNER_PHONE?.endsWith(phone?.slice(-10));
+  const systemPrompt = isOwner
+    ? buildOwnerSystemPrompt(servicios, horarios)
+    : buildSystemPrompt(servicios, horarios);
   const messages = [
     { role: "system", content: systemPrompt },
     ...history,
@@ -860,7 +923,7 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     wa_message_id: sent?.id ?? null,
   });
 
-  console.log(`🤖 [bot] -> ${phone}: "${respuesta.slice(0, 80)}..."`);
+  console.log(`🤖 [bot${isOwner ? "/dueño" : ""}] -> ${phone}: "${respuesta.slice(0, 80)}..."`);
 }
 
 // ─── Polling de mensajes entrantes ───────────────────────
