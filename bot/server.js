@@ -114,14 +114,31 @@ async function getPhoneFromChat(chatId) {
   return fallback;
 }
 
-async function transcribeAudio(waMessageId) {
+async function transcribeAudio(waMessageId, chatId) {
   if (!OPENAI_API_KEY) return null;
 
   try {
-    // Descargar audio de WAHA
-    const media = await wahaFetch(`/api/${WAHA_SESSION}/messages/${waMessageId}/download`);
+    // Descargar audio de WAHA - intentar múltiples endpoints
+    console.log(`[AUDIO] Descargando media: ${waMessageId}`);
+    let media = await wahaFetch(`/api/${WAHA_SESSION}/messages/${waMessageId}/download`);
+
     if (!media?.data) {
-      console.error("[AUDIO] No se pudo descargar el media");
+      // Intentar endpoint alternativo con chatId
+      media = await wahaFetch(`/api/${WAHA_SESSION}/chats/${chatId}/messages/${waMessageId}/download`);
+    }
+
+    if (!media?.data && media?.url) {
+      // Algunos WAHA devuelven URL en vez de data
+      console.log(`[AUDIO] Descargando desde URL: ${media.url}`);
+      const urlRes = await fetch(media.url);
+      if (urlRes.ok) {
+        const buf = await urlRes.arrayBuffer();
+        media = { data: Buffer.from(buf).toString("base64"), mimetype: "audio/ogg" };
+      }
+    }
+
+    if (!media?.data) {
+      console.error("[AUDIO] No se pudo descargar el media. Response:", JSON.stringify(media)?.slice(0, 200));
       return null;
     }
 
@@ -730,8 +747,12 @@ async function pollIncomingMessages() {
     for (const msg of messages) {
       if (msg.fromMe) continue;
 
-      const isAudio = msg.type === "ptt" || msg.type === "audio";
-      if (!msg.body && !msg.text && !isAudio) continue;
+      const isAudio = msg.type === "ptt" || msg.type === "audio" || msg.type === "voice";
+      // Log non-text messages to debug audio detection
+      if (!msg.body && !msg.text) {
+        console.log(`[MSG] type=${msg.type} hasMedia=${msg.hasMedia} fromMe=${msg.fromMe} keys=${Object.keys(msg).slice(0, 10).join(",")}`);
+      }
+      if (!msg.body && !msg.text && !isAudio && !msg.hasMedia) continue;
 
       const rawMsgId = msg.id?._serialized || msg.id;
       const waMessageId = typeof rawMsgId === "string" ? rawMsgId : String(rawMsgId ?? "");
@@ -753,7 +774,7 @@ async function pollIncomingMessages() {
       // Transcribir audio si es necesario
       let texto = msg.body || msg.text || "";
       if (isAudio) {
-        const transcripcion = await transcribeAudio(waMessageId);
+        const transcripcion = await transcribeAudio(waMessageId, chatId);
         if (transcripcion) {
           texto = transcripcion;
         } else {
