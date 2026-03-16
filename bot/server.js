@@ -75,6 +75,45 @@ async function sendWhatsApp(chatId, text) {
   });
 }
 
+async function transcribeAudio(waMessageId) {
+  if (!OPENAI_API_KEY) return null;
+
+  try {
+    // Descargar audio de WAHA
+    const media = await wahaFetch(`/api/${WAHA_SESSION}/messages/${waMessageId}/download`);
+    if (!media?.data) {
+      console.error("[AUDIO] No se pudo descargar el media");
+      return null;
+    }
+
+    // Enviar a Whisper
+    const blob = Buffer.from(media.data, "base64");
+    const form = new FormData();
+    form.append("file", new Blob([blob], { type: media.mimetype || "audio/ogg" }), "audio.ogg");
+    form.append("model", "whisper-1");
+    form.append("language", "es");
+
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: form,
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`[AUDIO] Whisper ${res.status}: ${err}`);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log(`🎤 Transcripción: "${data.text?.slice(0, 80)}"`);
+    return data.text;
+  } catch (err) {
+    console.error("[AUDIO] Error transcribiendo:", err.message);
+    return null;
+  }
+}
+
 async function notifyOwner(text) {
   if (!OWNER_PHONE) return;
   const chatId = `${OWNER_PHONE}@lid`;
@@ -587,9 +626,9 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     ...history,
   ];
 
-  // Si el último mensaje del historial es el mismo que estamos procesando, no duplicar
-  const lastUserMsg = messages.filter((m) => m.role === "user").pop();
-  if (!lastUserMsg || lastUserMsg.content !== texto) {
+  // Asegurar que messages termine con el mensaje actual del usuario
+  const lastMsg = messages[messages.length - 1];
+  if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== texto) {
     messages.push({ role: "user", content: texto });
   }
 
@@ -648,7 +687,9 @@ async function pollIncomingMessages() {
 
     for (const msg of messages) {
       if (msg.fromMe) continue;
-      if (!msg.body && !msg.text) continue;
+
+      const isAudio = msg.type === "ptt" || msg.type === "audio";
+      if (!msg.body && !msg.text && !isAudio) continue;
 
       const rawMsgId = msg.id?._serialized || msg.id;
       const waMessageId = typeof rawMsgId === "string" ? rawMsgId : String(rawMsgId ?? "");
@@ -667,7 +708,25 @@ async function pollIncomingMessages() {
         continue;
       }
 
-      const texto = msg.body || msg.text || "";
+      // Transcribir audio si es necesario
+      let texto = msg.body || msg.text || "";
+      if (isAudio) {
+        const transcripcion = await transcribeAudio(waMessageId);
+        if (transcripcion) {
+          texto = transcripcion;
+        } else {
+          texto = "[audio no transcrito]";
+          // Avisar al usuario que mande texto
+          const phone = chatId.replace(/@c\.us$|@lid$/, "");
+          processedMessages.add(waMessageId);
+          await sendWhatsApp(chatId, "No pude escuchar tu audio. ¿Podrías escribirme por texto lo que necesitás?");
+          await supabase.from("whatsapp_mensajes").insert({
+            negocio_id: negocioId, chat_id: chatId, mensaje: texto,
+            es_entrante: true, mensaje_tipo: "audio", wa_message_id: waMessageId,
+          });
+          continue;
+        }
+      }
       const phone = chatId.replace(/@c\.us$|@lid$/, "");
       const timestamp = msg.timestamp
         ? new Date(msg.timestamp * 1000).toISOString()
