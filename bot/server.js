@@ -40,6 +40,7 @@ const wahaHeaders = {
 // ─── Estado ──────────────────────────────────────────────
 let healthy = false;
 const processedMessages = new Set(); // wa_message_ids ya procesados
+const sentReminders = new Set(); // turno IDs con recordatorio enviado
 
 // Cache de servicios y horarios (evita queries repetidas)
 const dataCache = { servicios: null, horarios: null, ts: 0 };
@@ -709,6 +710,67 @@ async function processPendingMessages() {
   }
 }
 
+// ─── Recordatorios automáticos (2h antes) ────────────────
+
+async function sendReminders() {
+  if (!healthy) return;
+
+  const negocioId = await getNegocioId();
+  if (!negocioId) return;
+
+  const ahora = new Date();
+  const hoy = ahora.toISOString().split("T")[0];
+  const horaActual = ahora.toTimeString().slice(0, 5);
+
+  const dosHorasDespues = new Date(ahora.getTime() + 2 * 60 * 60 * 1000);
+  const horaLimite = dosHorasDespues.toTimeString().slice(0, 5);
+
+  const { data: turnos } = await supabase
+    .from("turnos")
+    .select("id, fecha, hora_inicio, hora_fin, cliente_id, servicio:servicios(nombre)")
+    .eq("negocio_id", negocioId)
+    .eq("fecha", hoy)
+    .in("estado", ["pendiente", "confirmado"])
+    .gte("hora_inicio", horaActual)
+    .lte("hora_inicio", horaLimite);
+
+  if (!turnos?.length) return;
+
+  for (const turno of turnos) {
+    if (sentReminders.has(turno.id)) continue;
+
+    const { data: cliente } = await supabase
+      .from("clientes")
+      .select("telefono, nombre")
+      .eq("id", turno.cliente_id)
+      .single();
+
+    if (!cliente?.telefono) continue;
+
+    const chatId = `${cliente.telefono}@lid`;
+    const mensaje = `📅 *Recordatorio de turno*\n\n` +
+      `Hola${cliente.nombre ? ` ${cliente.nombre}` : ""}, te recordamos que tenés un turno hoy:\n\n` +
+      `⏰ ${turno.hora_inicio.slice(0, 5)} - ${turno.hora_fin.slice(0, 5)}\n` +
+      `✂️ ${turno.servicio?.nombre || "Servicio"}\n\n` +
+      `¡Te esperamos en ${NEGOCIO_NOMBRE}! Si necesitás cancelar, avisanos por acá.`;
+
+    const sent = await sendWhatsApp(chatId, mensaje);
+    if (sent) {
+      sentReminders.add(turno.id);
+      console.log(`⏰ Recordatorio -> ${cliente.telefono}: turno ${turno.hora_inicio.slice(0, 5)}`);
+
+      await supabase.from("whatsapp_mensajes").insert({
+        negocio_id: negocioId,
+        chat_id: chatId,
+        mensaje,
+        es_entrante: false,
+        mensaje_tipo: "reminder",
+        cliente_id: turno.cliente_id,
+      });
+    }
+  }
+}
+
 // ─── Health check ────────────────────────────────────────
 
 const httpServer = createServer((req, res) => {
@@ -733,6 +795,7 @@ async function tick() {
     await checkWahaSession();
     await processPendingMessages();
     await pollIncomingMessages();
+    await sendReminders();
   } catch (err) {
     console.error("[TICK ERROR]", err.message, err.stack);
   } finally {
@@ -746,6 +809,7 @@ setInterval(() => {
     processedMessages.clear();
     console.log("Cache de mensajes limpiado");
   }
+  sentReminders.clear();
 }, 600_000);
 
 console.log(`Cruz Barber WhatsApp Bot v2.0`);
