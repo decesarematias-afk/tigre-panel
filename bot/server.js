@@ -74,10 +74,16 @@ async function sendWhatsApp(chatId, text) {
 
 async function checkWahaSession() {
   const data = await wahaFetch(`/api/sessions/${WAHA_SESSION}`);
-  if (!data) { healthy = false; return false; }
-  const ok = data.status === "WORKING";
-  if (!healthy && ok) console.log(`Session WAHA "${WAHA_SESSION}" activa`);
-  if (healthy && !ok) console.warn(`Session WAHA "${WAHA_SESSION}": ${data.status}`);
+  if (!data) {
+    console.error("[SESSION] No response from WAHA");
+    healthy = false;
+    return false;
+  }
+  const validStatuses = ["WORKING", "CONNECTED", "AUTHENTICATED"];
+  const ok = validStatuses.includes(data.status);
+  if (!healthy && ok) console.log(`[SESSION] WAHA "${WAHA_SESSION}" activa (status: ${data.status})`);
+  if (healthy && !ok) console.warn(`[SESSION] WAHA "${WAHA_SESSION}" no saludable: ${data.status}`);
+  if (!ok) console.warn(`[SESSION] Status: ${data.status} (esperado: ${validStatuses.join("/")})`);
   healthy = ok;
   return ok;
 }
@@ -584,13 +590,14 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
 // ─── Polling de mensajes entrantes ───────────────────────
 
 async function pollIncomingMessages() {
-  if (!healthy) return;
+  if (!healthy) { console.log("[POLL] Skipped - session unhealthy"); return; }
 
   const negocioId = await getNegocioId();
   if (!negocioId) return;
 
   const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
-  if (!chats || !Array.isArray(chats)) return;
+  if (!chats || !Array.isArray(chats)) { console.warn("[POLL] No chats returned from WAHA"); return; }
+  console.log(`[POLL] ${chats.length} chats found`);
 
   for (const chat of chats) {
     if (!chat.id?.endsWith("@c.us")) continue;
@@ -666,7 +673,7 @@ async function pollIncomingMessages() {
 // ─── Enviar mensajes manuales pendientes ─────────────────
 
 async function processPendingMessages() {
-  if (!healthy) return;
+  if (!healthy) { console.log("[PENDING] Skipped - session unhealthy"); return; }
 
   const negocioId = await getNegocioId();
   if (!negocioId) return;
@@ -719,12 +726,13 @@ let tickRunning = false;
 async function tick() {
   if (tickRunning) return; // evitar ticks solapados
   tickRunning = true;
+  console.log(`[TICK] ${new Date().toISOString()}`);
   try {
     await checkWahaSession();
     await processPendingMessages();
     await pollIncomingMessages();
   } catch (err) {
-    console.error("Error en tick:", err.message);
+    console.error("[TICK ERROR]", err.message, err.stack);
   } finally {
     tickRunning = false;
   }
