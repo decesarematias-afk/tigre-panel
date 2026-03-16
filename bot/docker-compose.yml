@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - WAHA_DEFAULT_SESSION=default
+      - WAHA_API_KEY=condi
+      # Persistir sesión para no re-escanear QR
+      - WAHA_SESSION_START_RETRY_INTERVAL=5
+      - WAHA_SESSION_START_RETRY_COUNT=3
+    volumes:
+      - waha_data:/app/.sessions
+    networks:
+      - whatsapp-network
+
+  bot:
+    build: .
+    container_name: cruz-barber-bot
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    depends_on:
+      - waha
+    networks:
+      - whatsapp-network
+
+volumes:
+  waha_data:
+
+networks:
+  whatsapp-network:
+    driver: bridge
