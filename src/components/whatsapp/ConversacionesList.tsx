@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback, useEffect } from "react"
+import { useState, useMemo } from "react"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Search, MessageCircle, Trash2 } from "lucide-react"
@@ -47,7 +47,7 @@ function formatTime(dateStr: string): string {
   })
 }
 
-function SwipeableChatItem({
+function ChatItem({
   conv,
   isSelected,
   onSelect,
@@ -58,160 +58,72 @@ function SwipeableChatItem({
   onSelect: () => void
   onDelete: () => void
 }) {
-  const [offsetX, setOffsetX] = useState(0)
-  const touchStartX = useRef(0)
-  const touchStartY = useRef(0)
-  const isSwiping = useRef(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  const DELETE_THRESHOLD = 70
-
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX
-    touchStartY.current = e.touches[0].clientY
-    isSwiping.current = false
-  }, [])
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    const dx = e.touches[0].clientX - touchStartX.current
-    const dy = e.touches[0].clientY - touchStartY.current
-
-    // Si el movimiento vertical es mayor, no hacer swipe
-    if (!isSwiping.current && Math.abs(dy) > Math.abs(dx)) return
-
-    if (Math.abs(dx) > 10) isSwiping.current = true
-
-    if (isSwiping.current) {
-      // Solo permitir swipe a la izquierda (negativo)
-      const newOffset = Math.min(0, Math.max(-DELETE_THRESHOLD - 20, dx))
-      setOffsetX(newOffset)
-    }
-  }, [])
-
-  const handleTouchEnd = useCallback(() => {
-    if (offsetX < -DELETE_THRESHOLD) {
-      // Mantener abierto mostrando el botón de borrar
-      setOffsetX(-DELETE_THRESHOLD)
-    } else {
-      setOffsetX(0)
-    }
-    isSwiping.current = false
-  }, [offsetX])
-
-  // Mouse drag support
-  const isMouseDown = useRef(false)
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isMouseDown.current) return
-    const dx = e.clientX - touchStartX.current
-    const dy = e.clientY - touchStartY.current
-
-    if (!isSwiping.current && Math.abs(dy) > Math.abs(dx)) return
-    if (Math.abs(dx) > 10) isSwiping.current = true
-
-    if (isSwiping.current) {
-      const newOffset = Math.min(0, Math.max(-DELETE_THRESHOLD - 20, dx))
-      setOffsetX(newOffset)
-    }
-  }, [])
-
-  const handleMouseUp = useCallback(() => {
-    if (!isMouseDown.current) return
-    isMouseDown.current = false
-    setOffsetX((prev) => (prev < -DELETE_THRESHOLD ? -DELETE_THRESHOLD : 0))
-    isSwiping.current = false
-    window.removeEventListener("mousemove", handleMouseMove)
-    window.removeEventListener("mouseup", handleMouseUp)
-  }, [handleMouseMove])
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      // Solo botón izquierdo
-      if (e.button !== 0) return
-      isMouseDown.current = true
-      touchStartX.current = e.clientX
-      touchStartY.current = e.clientY
-      isSwiping.current = false
-      window.addEventListener("mousemove", handleMouseMove)
-      window.addEventListener("mouseup", handleMouseUp)
-    },
-    [handleMouseMove, handleMouseUp]
-  )
-
-  // Cleanup listeners on unmount
-  useEffect(() => {
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove)
-      window.removeEventListener("mouseup", handleMouseUp)
-    }
-  }, [handleMouseMove, handleMouseUp])
-
-  const handleClick = useCallback(() => {
-    if (isSwiping.current) return
-    if (offsetX !== 0) {
-      setOffsetX(0)
-      return
-    }
-    onSelect()
-  }, [offsetX, onSelect])
+  const [confirming, setConfirming] = useState(false)
 
   return (
-    <div ref={containerRef} className="relative overflow-hidden">
-      {/* Delete button behind */}
-      <div className="absolute inset-y-0 right-0 flex items-center">
+    <div
+      className={cn(
+        "group relative flex items-center gap-3 p-3 cursor-pointer transition-colors",
+        isSelected ? "bg-muted" : "hover:bg-muted/50"
+      )}
+      onClick={() => {
+        if (confirming) return
+        onSelect()
+      }}
+    >
+      {/* Avatar */}
+      <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+        <span className="text-sm font-bold text-green-700">
+          {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
+        </span>
+      </div>
+
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium truncate">
+            {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
+          </p>
+          <span className="text-[10px] text-muted-foreground shrink-0">
+            {formatTime(conv.ultimo_mensaje_fecha)}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground truncate mt-0.5">
+          {conv.ultimo_mensaje}
+        </p>
+      </div>
+
+      {/* Delete button - visible on hover (desktop) or always on mobile via group */}
+      {confirming ? (
+        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => {
+              onDelete()
+              setConfirming(false)
+            }}
+            className="px-2 py-1 text-[11px] font-medium bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
+          >
+            Borrar
+          </button>
+          <button
+            onClick={() => setConfirming(false)}
+            className="px-2 py-1 text-[11px] font-medium bg-muted text-muted-foreground rounded hover:bg-muted/80 transition-colors"
+          >
+            No
+          </button>
+        </div>
+      ) : (
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onDelete()
-            setOffsetX(0)
+            setConfirming(true)
           }}
-          className="h-full px-5 bg-red-500 text-white flex items-center gap-1.5 text-xs font-medium"
+          className="shrink-0 p-1.5 rounded text-muted-foreground/40 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 max-sm:opacity-60"
+          title="Borrar conversación"
         >
           <Trash2 className="w-4 h-4" />
-          Borrar
         </button>
-      </div>
-
-      {/* Swipeable content */}
-      <div
-        className={cn(
-          "relative flex items-center gap-3 p-3 text-left transition-colors bg-background select-none",
-          isSelected && "bg-muted",
-          offsetX === 0 && "hover:bg-muted/50"
-        )}
-        style={{
-          transform: `translateX(${offsetX}px)`,
-          transition: isSwiping.current ? "none" : "transform 0.2s ease-out",
-        }}
-        onClick={handleClick}
-        onMouseDown={handleMouseDown}
-        onDragStart={(e) => e.preventDefault()}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-      >
-        {/* Avatar */}
-        <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-          <span className="text-sm font-bold text-green-700">
-            {(conv.cliente_nombre?.[0] ?? conv.chat_id[0])?.toUpperCase()}
-          </span>
-        </div>
-
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-medium truncate">
-              {conv.cliente_nombre ?? formatPhone(conv.chat_id)}
-            </p>
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              {formatTime(conv.ultimo_mensaje_fecha)}
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground truncate mt-0.5">
-            {conv.ultimo_mensaje}
-          </p>
-        </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -279,7 +191,7 @@ export function ConversacionesList({
         ) : (
           <div className="divide-y">
             {filtered.map((conv) => (
-              <SwipeableChatItem
+              <ChatItem
                 key={conv.chat_id}
                 conv={conv}
                 isSelected={selectedChatId === conv.chat_id}
