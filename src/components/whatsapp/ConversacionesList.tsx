@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from "react"
+import { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Search, MessageCircle, Trash2 } from "lucide-react"
@@ -98,6 +98,54 @@ function SwipeableChatItem({
     isSwiping.current = false
   }, [offsetX])
 
+  // Mouse drag support
+  const isMouseDown = useRef(false)
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isMouseDown.current) return
+    const dx = e.clientX - touchStartX.current
+    const dy = e.clientY - touchStartY.current
+
+    if (!isSwiping.current && Math.abs(dy) > Math.abs(dx)) return
+    if (Math.abs(dx) > 10) isSwiping.current = true
+
+    if (isSwiping.current) {
+      const newOffset = Math.min(0, Math.max(-DELETE_THRESHOLD - 20, dx))
+      setOffsetX(newOffset)
+    }
+  }, [])
+
+  const handleMouseUp = useCallback(() => {
+    if (!isMouseDown.current) return
+    isMouseDown.current = false
+    setOffsetX((prev) => (prev < -DELETE_THRESHOLD ? -DELETE_THRESHOLD : 0))
+    isSwiping.current = false
+    window.removeEventListener("mousemove", handleMouseMove)
+    window.removeEventListener("mouseup", handleMouseUp)
+  }, [handleMouseMove])
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      // Solo botón izquierdo
+      if (e.button !== 0) return
+      isMouseDown.current = true
+      touchStartX.current = e.clientX
+      touchStartY.current = e.clientY
+      isSwiping.current = false
+      window.addEventListener("mousemove", handleMouseMove)
+      window.addEventListener("mouseup", handleMouseUp)
+    },
+    [handleMouseMove, handleMouseUp]
+  )
+
+  // Cleanup listeners on unmount
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove)
+      window.removeEventListener("mouseup", handleMouseUp)
+    }
+  }, [handleMouseMove, handleMouseUp])
+
   const handleClick = useCallback(() => {
     if (isSwiping.current) return
     if (offsetX !== 0) {
@@ -127,7 +175,7 @@ function SwipeableChatItem({
       {/* Swipeable content */}
       <div
         className={cn(
-          "relative flex items-center gap-3 p-3 text-left transition-colors bg-background",
+          "relative flex items-center gap-3 p-3 text-left transition-colors bg-background select-none",
           isSelected && "bg-muted",
           offsetX === 0 && "hover:bg-muted/50"
         )}
@@ -136,6 +184,8 @@ function SwipeableChatItem({
           transition: isSwiping.current ? "none" : "transform 0.2s ease-out",
         }}
         onClick={handleClick}
+        onMouseDown={handleMouseDown}
+        onDragStart={(e) => e.preventDefault()}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
