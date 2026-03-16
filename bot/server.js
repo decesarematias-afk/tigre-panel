@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
+import { createServer } from "node:http";
 
 // ─── Config ──────────────────────────────────────────────
 const {
@@ -9,12 +10,23 @@ const {
   WAHA_API_KEY = "",
   WAHA_SESSION = "default",
   NEGOCIO_ID = "",
+  OPENAI_API_KEY = "",
+  ANTHROPIC_API_KEY = "",
+  OPENAI_MODEL = "gpt-4o-mini",
+  ANTHROPIC_MODEL = "claude-haiku-4-5-20251001",
   POLL_INTERVAL_MS = "2000",
   BOT_PORT = "4000",
+  NEGOCIO_NOMBRE = "Cruz Barber Studio",
+  NEGOCIO_DIRECCION = "",
+  NEGOCIO_TELEFONO = "",
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("❌ Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY");
+  console.error("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY");
+  process.exit(1);
+}
+if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
+  console.error("Falta OPENAI_API_KEY o ANTHROPIC_API_KEY (al menos uno)");
   process.exit(1);
 }
 
@@ -26,8 +38,8 @@ const wahaHeaders = {
 };
 
 // ─── Estado ──────────────────────────────────────────────
-let lastSeenTimestamp = null; // para evitar mensajes duplicados de WAHA
 let healthy = false;
+const processedMessages = new Set(); // wa_message_ids ya procesados
 
 // ─── Utilidades WAHA ─────────────────────────────────────
 async function wahaFetch(path, options = {}) {
@@ -44,72 +56,541 @@ async function wahaFetch(path, options = {}) {
     }
     return res.json();
   } catch (err) {
-    console.error(`WAHA fetch error (${path}):`, err.message);
+    console.error(`WAHA error (${path}):`, err.message);
     return null;
   }
 }
 
+async function sendWhatsApp(chatId, text) {
+  return wahaFetch("/api/sendText", {
+    method: "POST",
+    body: JSON.stringify({ session: WAHA_SESSION, chatId, text }),
+  });
+}
+
 async function checkWahaSession() {
   const data = await wahaFetch(`/api/sessions/${WAHA_SESSION}`);
-  if (!data) return false;
+  if (!data) { healthy = false; return false; }
   const ok = data.status === "WORKING";
-  if (!healthy && ok) console.log(`✅ Sesión WAHA "${WAHA_SESSION}" activa`);
-  if (healthy && !ok)
-    console.warn(`⚠️  Sesión WAHA "${WAHA_SESSION}" estado: ${data.status}`);
+  if (!healthy && ok) console.log(`Session WAHA "${WAHA_SESSION}" activa`);
+  if (healthy && !ok) console.warn(`Session WAHA "${WAHA_SESSION}": ${data.status}`);
   healthy = ok;
   return ok;
 }
 
 // ─── Negocio ID ──────────────────────────────────────────
-// Se puede pasar directo por env var, o se busca en la DB.
 async function getNegocioId() {
   if (NEGOCIO_ID) return NEGOCIO_ID;
-
-  const { data, error } = await supabase
-    .from("negocios")
-    .select("id")
-    .not("waha_url", "is", null)
-    .limit(1);
-
-  if (error || !data?.length) {
-    console.warn("⚠️  No hay negocios con WAHA configurado en la DB");
-    return null;
-  }
-  return data[0].id;
+  const { data } = await supabase.from("negocios").select("id").limit(1);
+  return data?.[0]?.id ?? null;
 }
 
-// ─── Recibir mensajes entrantes de WAHA (polling) ────────
+// ─── Funciones de datos ──────────────────────────────────
+
+async function getServicios(negocioId) {
+  const { data } = await supabase
+    .from("servicios")
+    .select("id, nombre, precio, duracion_minutos, activo")
+    .eq("negocio_id", negocioId)
+    .eq("activo", true)
+    .order("nombre");
+  return data || [];
+}
+
+async function getHorarios(negocioId) {
+  const { data } = await supabase
+    .from("horarios_atencion")
+    .select("*")
+    .eq("negocio_id", negocioId)
+    .order("dia_semana");
+  return data || [];
+}
+
+async function getTurnosDelDia(negocioId, fecha) {
+  const { data } = await supabase
+    .from("turnos")
+    .select("id, hora_inicio, hora_fin, estado, servicio:servicios(nombre)")
+    .eq("negocio_id", negocioId)
+    .eq("fecha", fecha)
+    .neq("estado", "cancelado")
+    .order("hora_inicio");
+  return data || [];
+}
+
+async function getOrCreateCliente(negocioId, phone, nombre) {
+  // Buscar existente
+  const { data: existing } = await supabase
+    .from("clientes")
+    .select("id, nombre")
+    .eq("negocio_id", negocioId)
+    .eq("telefono", phone)
+    .limit(1);
+
+  if (existing?.length) return existing[0];
+
+  // Crear nuevo
+  const { data: created, error } = await supabase
+    .from("clientes")
+    .insert({ negocio_id: negocioId, nombre: nombre || phone, telefono: phone })
+    .select("id, nombre")
+    .single();
+
+  if (error) { console.error("Error creando cliente:", error.message); return null; }
+  return created;
+}
+
+function calcularHorariosDisponibles(horariosDia, turnosExistentes, duracionMin) {
+  if (!horariosDia || horariosDia.cerrado) return [];
+
+  const slots = [];
+  const bloques = [];
+
+  // Bloque mañana
+  if (horariosDia.hora_apertura_manana && horariosDia.hora_cierre_manana) {
+    bloques.push({ desde: horariosDia.hora_apertura_manana, hasta: horariosDia.hora_cierre_manana });
+  }
+  // Bloque tarde
+  if (horariosDia.hora_apertura_tarde && horariosDia.hora_cierre_tarde) {
+    bloques.push({ desde: horariosDia.hora_apertura_tarde, hasta: horariosDia.hora_cierre_tarde });
+  }
+
+  for (const bloque of bloques) {
+    let [h, m] = bloque.desde.split(":").map(Number);
+    const [hFin, mFin] = bloque.hasta.split(":").map(Number);
+    const finMinutos = hFin * 60 + mFin;
+
+    while (h * 60 + m + duracionMin <= finMinutos) {
+      const inicio = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      const finSlotMin = h * 60 + m + duracionMin;
+      const finH = Math.floor(finSlotMin / 60);
+      const finM = finSlotMin % 60;
+      const fin = `${String(finH).padStart(2, "0")}:${String(finM).padStart(2, "0")}`;
+
+      // Verificar que no se solape con turnos existentes
+      const ocupado = turnosExistentes.some((t) => {
+        const tInicio = t.hora_inicio.slice(0, 5);
+        const tFin = t.hora_fin.slice(0, 5);
+        return inicio < tFin && fin > tInicio;
+      });
+
+      if (!ocupado) slots.push(inicio);
+
+      m += 30; // slots cada 30 min
+      if (m >= 60) { h += 1; m -= 60; }
+    }
+  }
+
+  return slots;
+}
+
+async function crearTurno(negocioId, clienteId, servicioId, fecha, horaInicio, duracionMin) {
+  const [h, m] = horaInicio.split(":").map(Number);
+  const finMin = h * 60 + m + duracionMin;
+  const horaFin = `${String(Math.floor(finMin / 60)).padStart(2, "0")}:${String(finMin % 60).padStart(2, "0")}`;
+
+  const { data, error } = await supabase
+    .from("turnos")
+    .insert({
+      negocio_id: negocioId,
+      cliente_id: clienteId,
+      servicio_id: servicioId,
+      fecha,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      estado: "pendiente",
+      origen: "whatsapp",
+    })
+    .select("id")
+    .single();
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, id: data.id, horaFin };
+}
+
+async function getMisTurnos(negocioId, clienteId) {
+  const hoy = new Date().toISOString().split("T")[0];
+  const { data } = await supabase
+    .from("turnos")
+    .select("id, fecha, hora_inicio, hora_fin, estado, servicio:servicios(nombre)")
+    .eq("negocio_id", negocioId)
+    .eq("cliente_id", clienteId)
+    .gte("fecha", hoy)
+    .neq("estado", "cancelado")
+    .order("fecha")
+    .order("hora_inicio")
+    .limit(5);
+  return data || [];
+}
+
+async function cancelarTurno(turnoId, clienteId) {
+  const { error } = await supabase
+    .from("turnos")
+    .update({ estado: "cancelado" })
+    .eq("id", turnoId)
+    .eq("cliente_id", clienteId);
+  return !error;
+}
+
+// ─── IA (OpenAI principal, Claude fallback) ──────────────
+
+const DIAS_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+function buildSystemPrompt(servicios, horarios) {
+  const hoy = new Date();
+  const fechaHoy = hoy.toISOString().split("T")[0];
+  const diaHoy = DIAS_ES[hoy.getDay()];
+
+  const listaServicios = servicios.map(
+    (s) => `- ${s.nombre}: $${s.precio} (${s.duracion_minutos} min)`
+  ).join("\n");
+
+  const listaHorarios = horarios.map((h) => {
+    if (h.cerrado) return `- ${DIAS_ES[h.dia_semana]}: CERRADO`;
+    const m = h.hora_apertura_manana && h.hora_cierre_manana
+      ? `${h.hora_apertura_manana.slice(0,5)}-${h.hora_cierre_manana.slice(0,5)}`
+      : "";
+    const t = h.hora_apertura_tarde && h.hora_cierre_tarde
+      ? `${h.hora_apertura_tarde.slice(0,5)}-${h.hora_cierre_tarde.slice(0,5)}`
+      : "";
+    return `- ${DIAS_ES[h.dia_semana]}: ${[m, t].filter(Boolean).join(" y ")}`;
+  }).join("\n");
+
+  return `Sos el asistente virtual de ${NEGOCIO_NOMBRE} por WhatsApp.
+${NEGOCIO_DIRECCION ? `Dirección: ${NEGOCIO_DIRECCION}` : ""}
+${NEGOCIO_TELEFONO ? `Teléfono: ${NEGOCIO_TELEFONO}` : ""}
+Hoy es ${diaHoy} ${fechaHoy}.
+
+Hablás en español argentino con voseo (vos, sos, tenés, querés). Sé amable, breve y profesional.
+Usá emojis con moderación (✂️💈📅).
+
+SERVICIOS DISPONIBLES:
+${listaServicios || "No hay servicios cargados"}
+
+HORARIOS DE ATENCIÓN:
+${listaHorarios || "No hay horarios configurados"}
+
+FUNCIONES DISPONIBLES - Cuando el usuario quiera hacer algo, respondé con un JSON de acción:
+
+1. AGENDAR TURNO: Cuando el usuario quiera un turno, necesitás: servicio, fecha y hora.
+   Si falta info, preguntá. Cuando tengas todo, respondé SOLO con:
+   {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"nombre del cliente si lo dijo"}
+
+2. VER TURNOS: Si preguntan por sus turnos:
+   {"action":"mis_turnos"}
+
+3. CANCELAR TURNO: Si quieren cancelar:
+   {"action":"cancelar","turno_id":"id si lo tenés"}
+
+4. VER DISPONIBILIDAD: Si preguntan qué horarios hay un día:
+   {"action":"disponibilidad","fecha":"YYYY-MM-DD","servicio":"nombre del servicio"}
+
+5. VER PRECIOS: Si preguntan precios, respondé directamente con la lista.
+
+REGLAS:
+- No podés agendar en horarios que no estén disponibles
+- No agendés sin confirmar con el cliente el servicio, fecha y hora
+- Si preguntan algo que no podés resolver, sugerí que se comuniquen directamente al local
+- Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
+- Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
+}
+
+async function callOpenAI(messages) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 500,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenAI ${res.status}: ${err}`);
+  }
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
+
+async function callAnthropic(messages) {
+  const systemMsg = messages.find((m) => m.role === "system");
+  const chatMsgs = messages.filter((m) => m.role !== "system");
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 500,
+      system: systemMsg?.content || "",
+      messages: chatMsgs.map((m) => ({ role: m.role, content: m.content })),
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Anthropic ${res.status}: ${err}`);
+  }
+  const data = await res.json();
+  return data.content[0].text;
+}
+
+async function getAIResponse(messages) {
+  // Intentar OpenAI primero, fallback a Claude
+  if (OPENAI_API_KEY) {
+    try {
+      return await callOpenAI(messages);
+    } catch (err) {
+      console.error("OpenAI falló:", err.message);
+      if (ANTHROPIC_API_KEY) {
+        console.log("Fallback a Anthropic...");
+        return await callAnthropic(messages);
+      }
+      throw err;
+    }
+  }
+  return await callAnthropic(messages);
+}
+
+// ─── Historial de conversación ───────────────────────────
+
+async function getChatHistory(negocioId, chatId, limit = 20) {
+  const { data } = await supabase
+    .from("whatsapp_mensajes")
+    .select("mensaje, es_entrante, mensaje_tipo, created_at")
+    .eq("negocio_id", negocioId)
+    .eq("chat_id", chatId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (!data) return [];
+  return data.reverse().map((m) => ({
+    role: m.es_entrante ? "user" : "assistant",
+    content: m.mensaje,
+  }));
+}
+
+// ─── Procesar acciones del bot ───────────────────────────
+
+function tryParseAction(text) {
+  // Intentar extraer JSON de la respuesta
+  const jsonMatch = text.match(/\{[\s\S]*?"action"\s*:[\s\S]*?\}/);
+  if (!jsonMatch) return null;
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+}
+
+async function handleBotAction(action, negocioId, chatId, phone) {
+  switch (action.action) {
+    case "agendar": {
+      const servicios = await getServicios(negocioId);
+      const servicio = servicios.find(
+        (s) => s.nombre.toLowerCase().includes(action.servicio?.toLowerCase() || "")
+      );
+      if (!servicio) return `No encontré el servicio "${action.servicio}". Los servicios disponibles son:\n${servicios.map(s => `- ${s.nombre}`).join("\n")}`;
+
+      const fecha = action.fecha;
+      if (!fecha) return "Necesito la fecha para agendar. ¿Qué día te queda bien?";
+
+      const hora = action.hora;
+      if (!hora) return "¿A qué hora preferís?";
+
+      // Verificar disponibilidad
+      const diaSemana = new Date(fecha + "T12:00:00").getDay();
+      const horarios = await getHorarios(negocioId);
+      const horarioDia = horarios.find((h) => h.dia_semana === diaSemana);
+      if (!horarioDia || horarioDia.cerrado) return `Ese día (${DIAS_ES[diaSemana]}) estamos cerrados. ¿Querés elegir otro día?`;
+
+      const turnos = await getTurnosDelDia(negocioId, fecha);
+      const disponibles = calcularHorariosDisponibles(horarioDia, turnos, servicio.duracion_minutos);
+      if (!disponibles.includes(hora)) {
+        const sugerencias = disponibles.slice(0, 6).join(", ");
+        return `El horario ${hora} no está disponible para el ${fecha}. Horarios libres: ${sugerencias || "no hay disponibilidad ese día"}`;
+      }
+
+      // Crear cliente si no existe
+      const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
+      if (!cliente) return "Hubo un error al registrar tus datos. Intentá de nuevo.";
+
+      // Crear turno
+      const result = await crearTurno(negocioId, cliente.id, servicio.id, fecha, hora, servicio.duracion_minutos);
+      if (!result.ok) {
+        if (result.error?.includes("solapamiento") || result.error?.includes("Ya existe")) {
+          return "Ese horario acaba de ser tomado. ¿Querés elegir otro?";
+        }
+        return `Error al agendar: ${result.error}`;
+      }
+
+      return `✅ *Turno agendado*\n\n📅 ${fecha}\n⏰ ${hora} - ${result.horaFin}\n✂️ ${servicio.nombre}\n💰 $${servicio.precio}\n\n¡Te esperamos en ${NEGOCIO_NOMBRE}! Si necesitás cancelar, avisame por acá.`;
+    }
+
+    case "mis_turnos": {
+      const cliente = await getOrCreateCliente(negocioId, phone, null);
+      if (!cliente) return "No encontré turnos asociados a este número.";
+
+      const turnos = await getMisTurnos(negocioId, cliente.id);
+      if (!turnos.length) return "No tenés turnos próximos agendados. ¿Querés sacar uno?";
+
+      const lista = turnos.map((t) =>
+        `📅 ${t.fecha} ⏰ ${t.hora_inicio.slice(0,5)}-${t.hora_fin.slice(0,5)} | ${t.servicio?.nombre || "Servicio"} (${t.estado})`
+      ).join("\n");
+      return `*Tus próximos turnos:*\n\n${lista}\n\n¿Querés cancelar alguno?`;
+    }
+
+    case "cancelar": {
+      const cliente = await getOrCreateCliente(negocioId, phone, null);
+      if (!cliente) return "No encontré turnos para cancelar.";
+
+      if (action.turno_id) {
+        const ok = await cancelarTurno(action.turno_id, cliente.id);
+        return ok ? "✅ Turno cancelado." : "No pude cancelar ese turno. Verificá el ID.";
+      }
+
+      // Mostrar turnos para elegir
+      const turnos = await getMisTurnos(negocioId, cliente.id);
+      if (!turnos.length) return "No tenés turnos próximos para cancelar.";
+
+      const lista = turnos.map((t, i) =>
+        `${i + 1}. 📅 ${t.fecha} ⏰ ${t.hora_inicio.slice(0,5)} - ${t.servicio?.nombre || "Servicio"}`
+      ).join("\n");
+      return `¿Cuál turno querés cancelar?\n\n${lista}\n\nDecime el número.`;
+    }
+
+    case "disponibilidad": {
+      const fecha = action.fecha;
+      if (!fecha) return "¿Para qué día querés ver disponibilidad?";
+
+      const servicios = await getServicios(negocioId);
+      const servicio = action.servicio
+        ? servicios.find((s) => s.nombre.toLowerCase().includes(action.servicio.toLowerCase()))
+        : servicios[0];
+      const duracion = servicio?.duracion_minutos || 30;
+
+      const diaSemana = new Date(fecha + "T12:00:00").getDay();
+      const horarios = await getHorarios(negocioId);
+      const horarioDia = horarios.find((h) => h.dia_semana === diaSemana);
+      if (!horarioDia || horarioDia.cerrado) return `El ${DIAS_ES[diaSemana]} ${fecha} estamos cerrados.`;
+
+      const turnos = await getTurnosDelDia(negocioId, fecha);
+      const disponibles = calcularHorariosDisponibles(horarioDia, turnos, duracion);
+
+      if (!disponibles.length) return `No hay horarios disponibles el ${fecha}. ¿Otro día?`;
+
+      return `📅 *Horarios disponibles el ${fecha}* (${DIAS_ES[diaSemana]})${servicio ? ` para ${servicio.nombre}` : ""}:\n\n${disponibles.join(" | ")}\n\n¿Cuál te queda bien?`;
+    }
+
+    default:
+      return null;
+  }
+}
+
+// ─── Lógica principal del bot ────────────────────────────
+
+async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
+  const phone = chatId.replace("@c.us", "");
+
+  // Verificar modo del chat (bot vs manual)
+  const { data: config } = await supabase
+    .from("whatsapp_chat_config")
+    .select("modo")
+    .eq("chat_id", chatId)
+    .eq("negocio_id", negocioId)
+    .limit(1);
+
+  const modo = config?.[0]?.modo || "bot";
+  if (modo === "manual") {
+    console.log(`💬 [manual] ${phone}: "${texto.slice(0, 50)}"`);
+    return; // No responder, el operador maneja
+  }
+
+  // Obtener datos del negocio
+  const [servicios, horarios, history] = await Promise.all([
+    getServicios(negocioId),
+    getHorarios(negocioId),
+    getChatHistory(negocioId, chatId, 20),
+  ]);
+
+  const systemPrompt = buildSystemPrompt(servicios, horarios);
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history,
+  ];
+
+  // Si el último mensaje del historial es el mismo que estamos procesando, no duplicar
+  const lastUserMsg = messages.filter((m) => m.role === "user").pop();
+  if (!lastUserMsg || lastUserMsg.content !== texto) {
+    messages.push({ role: "user", content: texto });
+  }
+
+  let respuesta;
+  try {
+    respuesta = await getAIResponse(messages);
+  } catch (err) {
+    console.error("Error IA:", err.message);
+    respuesta = `Disculpá, tengo un problema técnico. Podés comunicarte al local directamente.${NEGOCIO_TELEFONO ? ` Tel: ${NEGOCIO_TELEFONO}` : ""}`;
+  }
+
+  // Verificar si la IA respondió con una acción
+  const action = tryParseAction(respuesta);
+  if (action) {
+    const actionResult = await handleBotAction(action, negocioId, chatId, phone);
+    if (actionResult) respuesta = actionResult;
+  }
+
+  // Enviar respuesta por WhatsApp
+  const sent = await sendWhatsApp(chatId, respuesta);
+
+  // Guardar respuesta en Supabase
+  await supabase.from("whatsapp_mensajes").insert({
+    negocio_id: negocioId,
+    chat_id: chatId,
+    mensaje: respuesta,
+    es_entrante: false,
+    mensaje_tipo: "bot",
+    wa_message_id: sent?.id ?? null,
+  });
+
+  console.log(`🤖 [bot] -> ${phone}: "${respuesta.slice(0, 80)}..."`);
+}
+
+// ─── Polling de mensajes entrantes ───────────────────────
+
 async function pollIncomingMessages() {
   if (!healthy) return;
-
-  const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
-  if (!chats || !Array.isArray(chats)) return;
 
   const negocioId = await getNegocioId();
   if (!negocioId) return;
 
+  const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
+  if (!chats || !Array.isArray(chats)) return;
+
   for (const chat of chats) {
-    // Solo chats individuales (no grupos)
     if (!chat.id?.endsWith("@c.us")) continue;
 
     const chatId = chat.id;
     const messages = await wahaFetch(
-      `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=10&downloadMedia=false`
+      `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=false`
     );
     if (!messages || !Array.isArray(messages)) continue;
 
     for (const msg of messages) {
-      // Solo mensajes entrantes (fromMe = false)
       if (msg.fromMe) continue;
       if (!msg.body && !msg.text) continue;
 
       const waMessageId = msg.id;
-      const texto = msg.body || msg.text || "";
-      const timestamp = msg.timestamp
-        ? new Date(msg.timestamp * 1000).toISOString()
-        : new Date().toISOString();
+      if (processedMessages.has(waMessageId)) continue;
 
-      // Verificar si ya existe en Supabase
+      // Verificar en DB
       const { data: existing } = await supabase
         .from("whatsapp_mensajes")
         .select("id")
@@ -117,10 +598,18 @@ async function pollIncomingMessages() {
         .eq("negocio_id", negocioId)
         .limit(1);
 
-      if (existing && existing.length > 0) continue;
+      if (existing?.length) {
+        processedMessages.add(waMessageId);
+        continue;
+      }
 
-      // Buscar cliente por teléfono
+      const texto = msg.body || msg.text || "";
       const phone = chatId.replace("@c.us", "");
+      const timestamp = msg.timestamp
+        ? new Date(msg.timestamp * 1000).toISOString()
+        : new Date().toISOString();
+
+      // Buscar/crear cliente
       const { data: clientes } = await supabase
         .from("clientes")
         .select("id")
@@ -130,7 +619,7 @@ async function pollIncomingMessages() {
 
       const clienteId = clientes?.[0]?.id ?? null;
 
-      // Insertar mensaje entrante
+      // Guardar mensaje entrante
       const { error } = await supabase.from("whatsapp_mensajes").insert({
         negocio_id: negocioId,
         chat_id: chatId,
@@ -143,22 +632,28 @@ async function pollIncomingMessages() {
       });
 
       if (error) {
-        console.error("Error insertando mensaje entrante:", error.message);
-      } else {
-        console.log(`📩 Mensaje entrante de ${phone}: "${texto.slice(0, 50)}..."`);
+        console.error("Error guardando mensaje:", error.message);
+        continue;
       }
+
+      processedMessages.add(waMessageId);
+      console.log(`📩 ${phone}: "${texto.slice(0, 50)}"`);
+
+      // Responder con IA
+      await handleIncomingMessage(negocioId, chatId, texto, waMessageId);
     }
   }
 }
 
-// ─── Enviar mensajes pendientes (manual_pending) ─────────
+// ─── Enviar mensajes manuales pendientes ─────────────────
+
 async function processPendingMessages() {
   if (!healthy) return;
 
   const negocioId = await getNegocioId();
   if (!negocioId) return;
 
-  const { data: pending, error } = await supabase
+  const { data: pending } = await supabase
     .from("whatsapp_mensajes")
     .select("*")
     .eq("negocio_id", negocioId)
@@ -167,50 +662,27 @@ async function processPendingMessages() {
     .order("created_at", { ascending: true })
     .limit(10);
 
-  if (error) {
-    console.error("Error fetching pending messages:", error.message);
-    return;
-  }
-
-  if (!pending || pending.length === 0) return;
+  if (!pending?.length) return;
 
   for (const msg of pending) {
-    const result = await wahaFetch(`/api/sendText`, {
-      method: "POST",
-      body: JSON.stringify({
-        session: WAHA_SESSION,
-        chatId: msg.chat_id,
-        text: msg.mensaje,
-      }),
-    });
-
+    const result = await sendWhatsApp(msg.chat_id, msg.mensaje);
     if (result) {
-      // Marcar como enviado
       await supabase
         .from("whatsapp_mensajes")
-        .update({
-          mensaje_tipo: "manual",
-          wa_message_id: result.id ?? null,
-        })
+        .update({ mensaje_tipo: "manual", wa_message_id: result.id ?? null })
         .eq("id", msg.id);
-
-      console.log(
-        `📤 Mensaje enviado a ${msg.chat_id}: "${msg.mensaje.slice(0, 50)}..."`
-      );
+      console.log(`📤 manual -> ${msg.chat_id}: "${msg.mensaje.slice(0, 50)}"`);
     } else {
-      // Marcar como error
       await supabase
         .from("whatsapp_mensajes")
         .update({ mensaje_tipo: "manual_error" })
         .eq("id", msg.id);
-
-      console.error(`❌ Error enviando a ${msg.chat_id}`);
+      console.error(`Error enviando manual a ${msg.chat_id}`);
     }
   }
 }
 
-// ─── Health endpoint ─────────────────────────────────────
-import { createServer } from "node:http";
+// ─── Health check ────────────────────────────────────────
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
@@ -224,26 +696,38 @@ const httpServer = createServer((req, res) => {
 
 // ─── Loop principal ──────────────────────────────────────
 const interval = parseInt(POLL_INTERVAL_MS, 10);
+let tickRunning = false;
 
 async function tick() {
+  if (tickRunning) return; // evitar ticks solapados
+  tickRunning = true;
   try {
     await checkWahaSession();
     await processPendingMessages();
     await pollIncomingMessages();
   } catch (err) {
     console.error("Error en tick:", err.message);
+  } finally {
+    tickRunning = false;
   }
 }
 
-console.log("🤖 Cruz Barber WhatsApp Bot iniciando...");
-console.log(`   WAHA: ${WAHA_API_URL} (sesión: ${WAHA_SESSION})`);
-console.log(`   Supabase: ${SUPABASE_URL}`);
-console.log(`   Poll interval: ${interval}ms`);
-console.log(`   HTTP health: :${BOT_PORT}/health`);
+// Limpiar cache de mensajes procesados cada 10 min (evitar memory leak)
+setInterval(() => {
+  if (processedMessages.size > 5000) {
+    processedMessages.clear();
+    console.log("Cache de mensajes limpiado");
+  }
+}, 600_000);
+
+console.log(`Cruz Barber WhatsApp Bot v2.0`);
+console.log(`  WAHA: ${WAHA_API_URL} (sesion: ${WAHA_SESSION})`);
+console.log(`  Supabase: ${SUPABASE_URL}`);
+console.log(`  IA: ${OPENAI_API_KEY ? "OpenAI" : ""}${OPENAI_API_KEY && ANTHROPIC_API_KEY ? " + " : ""}${ANTHROPIC_API_KEY ? "Anthropic (fallback)" : ""}`);
+console.log(`  Poll: ${interval}ms | Puerto: ${BOT_PORT}`);
 
 httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", () => {
-  console.log(`🚀 Bot server escuchando en puerto ${BOT_PORT}`);
-  // Primer tick inmediato, después intervalo
+  console.log(`Bot escuchando en :${BOT_PORT}`);
   tick();
   setInterval(tick, interval);
 });
