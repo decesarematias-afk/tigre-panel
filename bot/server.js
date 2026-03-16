@@ -8,6 +8,7 @@ const {
   WAHA_API_URL = "http://waha:3000",
   WAHA_API_KEY = "",
   WAHA_SESSION = "default",
+  NEGOCIO_ID = "",
   POLL_INTERVAL_MS = "2000",
   BOT_PORT = "4000",
 } = process.env;
@@ -59,43 +60,22 @@ async function checkWahaSession() {
   return ok;
 }
 
-// ─── Buscar negocio por waha_url ─────────────────────────
-// El bot necesita saber a qué negocio pertenece cada mensaje.
-// Buscamos negocios que tengan configurado WAHA.
-let cachedNegocios = [];
-let negociosCacheTime = 0;
-const NEGOCIO_CACHE_TTL = 60_000; // 1 min
+// ─── Negocio ID ──────────────────────────────────────────
+// Se puede pasar directo por env var, o se busca en la DB.
+async function getNegocioId() {
+  if (NEGOCIO_ID) return NEGOCIO_ID;
 
-async function getNegocios() {
-  if (Date.now() - negociosCacheTime < NEGOCIO_CACHE_TTL) return cachedNegocios;
   const { data, error } = await supabase
     .from("negocios")
-    .select("id, nombre, waha_url, waha_api_key")
-    .not("waha_url", "is", null);
-  if (error) {
-    console.error("Error fetching negocios:", error.message);
-    return cachedNegocios;
-  }
-  cachedNegocios = data || [];
-  negociosCacheTime = Date.now();
-  return cachedNegocios;
-}
+    .select("id")
+    .not("waha_url", "is", null)
+    .limit(1);
 
-// Por ahora, si hay un solo negocio, lo usamos directamente.
-// Si hay varios, se matchea por la config de WAHA url.
-async function getNegocioId() {
-  const negocios = await getNegocios();
-  if (negocios.length === 0) {
+  if (error || !data?.length) {
     console.warn("⚠️  No hay negocios con WAHA configurado en la DB");
     return null;
   }
-  // Si hay un solo negocio, usamos ese
-  if (negocios.length === 1) return negocios[0].id;
-  // Si hay varios, buscamos el que matchea con nuestra WAHA_API_URL
-  const match = negocios.find(
-    (n) => n.waha_url === WAHA_API_URL || n.waha_api_key === WAHA_API_KEY
-  );
-  return match?.id ?? negocios[0].id;
+  return data[0].id;
 }
 
 // ─── Recibir mensajes entrantes de WAHA (polling) ────────
