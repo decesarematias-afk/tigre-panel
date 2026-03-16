@@ -493,6 +493,11 @@ Usá emojis con moderación (✂️💈📅).
 SERVICIOS DISPONIBLES:
 ${listaServicios || "No hay servicios cargados"}
 
+SERVICIO DE URGENCIA (lunes o días/horarios fuera de atención):
+- Corte de urgencia: $20.000 (requiere aviso con 24hs de anticipación mínimo)
+- Corte + Barba de urgencia: $22.000 (requiere aviso con 24hs de anticipación mínimo)
+IMPORTANTE: Si un cliente pide turno para un LUNES o fuera del horario de atención, ofrecele el servicio de urgencia con la tarifa especial. Explicale que tiene que avisar con mínimo 24 horas de anticipación. Si acepta, agendá normalmente con la acción "agendar" usando el servicio original (corte o corte+barba), el sistema notifica al dueño.
+
 HORARIOS DE ATENCIÓN:
 ${listaHorarios || "No hay horarios configurados"}
 
@@ -646,8 +651,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
         // Día cerrado → notificar al dueño para posible excepción
         const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
         const nombre = cliente?.nombre || action.nombre || phone;
-        notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Ese día estamos cerrados. ¿Hacemos la excepción?`);
-        return `Ese día (${DIAS_ES[diaSemana]}) normalmente estamos cerrados, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+        const tarifaUrgencia = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+        notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaUrgencia}\n\n⚠️ Ese día estamos cerrados. ¿Confirmamos?`);
+        return `Ese día (${DIAS_ES[diaSemana]}) normalmente estamos cerrados, pero tenemos el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le avisé al dueño para confirmar tu turno. Te aviso en breve. 🙏`;
       }
 
       const turnos = await getTurnosDelDia(negocioId, fecha);
@@ -658,8 +664,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
           // No hay nada disponible → consultar al dueño
           const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
           const nombre = cliente?.nombre || action.nombre || phone;
-          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ No hay disponibilidad ese día. ¿Hacemos la excepción?`);
-          return `No tenemos disponibilidad ese día, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+          const tarifaUrg = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+          notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaUrg}\n\n⚠️ No hay disponibilidad ese día. ¿Confirmamos?`);
+          return `No tenemos disponibilidad ese día, pero podemos ofrecerte el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le consulté al dueño. Te aviso en breve. 🙏`;
         }
         // Hay otros horarios → ofrecer alternativas pero también notificar si pidió fuera de rango
         const horaNum = parseInt(hora.split(":")[0]) * 60 + parseInt(hora.split(":")[1]);
@@ -679,8 +686,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
           // Pidió fuera del rango de horarios → notificar al dueño
           const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
           const nombre = cliente?.nombre || action.nombre || phone;
-          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Fuera del horario de atención. ¿Hacemos la excepción?`);
-          return `Ese horario (${hora}) está fuera de nuestro horario de atención, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏\n\nSi querés, estos horarios sí están disponibles: ${sugerencias}`;
+          const tarifaFuera = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+          notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaFuera}\n\n⚠️ Fuera del horario de atención. ¿Confirmamos?`);
+          return `Ese horario (${hora}) está fuera de nuestro horario de atención, pero tenemos el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le consulté al dueño. Te aviso en breve. 🙏\n\nSi preferís horario normal, estos están disponibles: ${sugerencias}`;
         }
         return `El horario ${hora} no está disponible para el ${fecha}. Horarios libres: ${sugerencias}`;
       }
