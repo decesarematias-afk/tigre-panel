@@ -597,12 +597,13 @@ async function pollIncomingMessages() {
 
   const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
   if (!chats || !Array.isArray(chats)) { console.warn("[POLL] No chats returned from WAHA"); return; }
-  console.log(`[POLL] ${chats.length} chats found`);
+  if (chats.length > 0) console.log(`[POLL] ${chats.length} chats found (first id type: ${typeof chats[0].id}, sample: ${JSON.stringify(chats[0].id).slice(0, 100)})`);
 
   for (const chat of chats) {
-    if (!chat.id?.endsWith("@c.us")) continue;
-
-    const chatId = chat.id;
+    // WAHA puede devolver id como string o como objeto {_serialized: "...@c.us"}
+    const rawId = chat.id?._serialized || chat.id;
+    const chatId = typeof rawId === "string" ? rawId : String(rawId ?? "");
+    if (!chatId.endsWith("@c.us")) continue;
     const messages = await wahaFetch(
       `/api/${WAHA_SESSION}/chats/${chatId}/messages?limit=5&downloadMedia=false`
     );
@@ -612,8 +613,9 @@ async function pollIncomingMessages() {
       if (msg.fromMe) continue;
       if (!msg.body && !msg.text) continue;
 
-      const waMessageId = msg.id;
-      if (processedMessages.has(waMessageId)) continue;
+      const rawMsgId = msg.id?._serialized || msg.id;
+      const waMessageId = typeof rawMsgId === "string" ? rawMsgId : String(rawMsgId ?? "");
+      if (!waMessageId || processedMessages.has(waMessageId)) continue;
 
       // Verificar en DB
       const { data: existing } = await supabase
