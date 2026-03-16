@@ -41,6 +41,10 @@ const wahaHeaders = {
 let healthy = false;
 const processedMessages = new Set(); // wa_message_ids ya procesados
 
+// Cache de servicios y horarios (evita queries repetidas)
+const dataCache = { servicios: null, horarios: null, ts: 0 };
+const CACHE_TTL = 300_000; // 5 minutos
+
 // ─── Utilidades WAHA ─────────────────────────────────────
 async function wahaFetch(path, options = {}) {
   const url = `${WAHA_API_URL}${path}`;
@@ -87,23 +91,37 @@ async function getNegocioId() {
 
 // ─── Funciones de datos ──────────────────────────────────
 
+async function refreshCache(negocioId) {
+  const [serviciosRes, horariosRes] = await Promise.all([
+    supabase
+      .from("servicios")
+      .select("id, nombre, precio, duracion_minutos, activo")
+      .eq("negocio_id", negocioId)
+      .eq("activo", true)
+      .order("nombre"),
+    supabase
+      .from("horarios_atencion")
+      .select("*")
+      .eq("negocio_id", negocioId)
+      .order("dia_semana"),
+  ]);
+  dataCache.servicios = serviciosRes.data || [];
+  dataCache.horarios = horariosRes.data || [];
+  dataCache.ts = Date.now();
+}
+
 async function getServicios(negocioId) {
-  const { data } = await supabase
-    .from("servicios")
-    .select("id, nombre, precio, duracion_minutos, activo")
-    .eq("negocio_id", negocioId)
-    .eq("activo", true)
-    .order("nombre");
-  return data || [];
+  if (!dataCache.servicios || Date.now() - dataCache.ts > CACHE_TTL) {
+    await refreshCache(negocioId);
+  }
+  return dataCache.servicios;
 }
 
 async function getHorarios(negocioId) {
-  const { data } = await supabase
-    .from("horarios_atencion")
-    .select("*")
-    .eq("negocio_id", negocioId)
-    .order("dia_semana");
-  return data || [];
+  if (!dataCache.horarios || Date.now() - dataCache.ts > CACHE_TTL) {
+    await refreshCache(negocioId);
+  }
+  return dataCache.horarios;
 }
 
 async function getTurnosDelDia(negocioId, fecha) {
