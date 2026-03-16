@@ -116,7 +116,7 @@ async function transcribeAudio(waMessageId) {
 
 async function notifyOwner(text) {
   if (!OWNER_PHONE) return;
-  const chatId = `${OWNER_PHONE}@lid`;
+  const chatId = `${OWNER_PHONE}@c.us`;
   const sent = await sendWhatsApp(chatId, text);
   if (sent) console.log(`📢 Owner notificado: "${text.slice(0, 60)}..."`);
   return sent;
@@ -331,7 +331,8 @@ function buildSystemPrompt(servicios, horarios) {
 
   return `Sos el asistente virtual de ${NEGOCIO_NOMBRE} por WhatsApp.
 ${NEGOCIO_DIRECCION ? `Dirección: ${NEGOCIO_DIRECCION}` : ""}
-${NEGOCIO_TELEFONO ? `Teléfono: ${NEGOCIO_TELEFONO}` : ""}
+${NEGOCIO_TELEFONO ? `WhatsApp del local: ${NEGOCIO_TELEFONO}` : ""}
+${OWNER_PHONE ? `Teléfono para llamar: ${OWNER_PHONE}` : ""}
 Hoy es ${diaHoy} ${fechaHoy}.
 
 Hablás en español argentino con voseo (vos, sos, tenés, querés). Sé amable, breve y profesional.
@@ -637,7 +638,7 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     respuesta = await getAIResponse(messages);
   } catch (err) {
     console.error("Error IA:", err.message);
-    respuesta = `Disculpá, tengo un problema técnico. Podés comunicarte al local directamente.${NEGOCIO_TELEFONO ? ` Tel: ${NEGOCIO_TELEFONO}` : ""}`;
+    respuesta = `Disculpá, tengo un problema técnico. Podés comunicarte al local directamente.${OWNER_PHONE ? ` Tel: ${OWNER_PHONE}` : ""}`;
   }
 
   // Verificar si la IA respondió con una acción
@@ -839,7 +840,7 @@ async function checkPanelCancellations() {
 
     if (!cliente?.telefono) { notifiedCancellations.add(turno.id); continue; }
 
-    const chatId = `${cliente.telefono}@lid`;
+    const chatId = `${cliente.telefono}@c.us`;
 
     // Buscar disponibilidad para ofrecer reprogramación
     const diaSemana = new Date(turno.fecha + "T12:00:00").getDay();
@@ -911,7 +912,7 @@ async function sendReminders() {
 
     if (!cliente?.telefono) continue;
 
-    const chatId = `${cliente.telefono}@lid`;
+    const chatId = `${cliente.telefono}@c.us`;
     const mensaje = `📅 *Recordatorio de turno*\n\n` +
       `Hola${cliente.nombre ? ` ${cliente.nombre}` : ""}, te recordamos que tenés un turno hoy:\n\n` +
       `⏰ ${turno.hora_inicio.slice(0, 5)} - ${turno.hora_fin.slice(0, 5)}\n` +
