@@ -20,6 +20,7 @@ const {
   NEGOCIO_DIRECCION = "",
   NEGOCIO_TELEFONO = "",
   OWNER_PHONE = "5491159027202",
+  OWNER_ACCESS_KEY = "",
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -46,6 +47,7 @@ const wahaHeaders = {
 // ─── Estado ──────────────────────────────────────────────
 let healthy = false;
 const processedMessages = new Set(); // wa_message_ids ya procesados
+const ownerChatIds = new Set(); // chatIds autenticados como dueño
 const sentReminders = new Set(); // turno IDs con recordatorio enviado
 const botCancelledTurnos = new Set(); // turno IDs cancelados por el bot (no notificar como panel)
 
@@ -148,6 +150,12 @@ async function getPhoneFromChat(chatId) {
     }
   } catch (err) {
     console.error("[CONTACT] Error resolving phone:", err.message);
+  }
+
+  // Si es un chatId conocido como owner, devolver OWNER_PHONE
+  if (ownerChatIds.has(chatId) && OWNER_PHONE) {
+    phoneCache.set(chatId, OWNER_PHONE);
+    return OWNER_PHONE;
   }
 
   // Fallback: usar el ID numérico (puede no ser teléfono real)
@@ -283,7 +291,10 @@ async function checkWahaSession() {
   }
   const validStatuses = ["WORKING", "CONNECTED", "AUTHENTICATED"];
   const ok = validStatuses.includes(data.status);
-  if (!healthy && ok) console.log(`[SESSION] WAHA "${WAHA_SESSION}" activa (status: ${data.status})`);
+  if (!healthy && ok) {
+    console.log(`[SESSION] WAHA "${WAHA_SESSION}" activa (status: ${data.status})`);
+    resolveOwnerChatId();
+  }
   if (healthy && !ok) console.warn(`[SESSION] WAHA "${WAHA_SESSION}" no saludable: ${data.status}`);
   if (!ok) console.warn(`[SESSION] Status: ${data.status} (esperado: ${validStatuses.join("/")})`);
   healthy = ok;
@@ -295,6 +306,83 @@ async function getNegocioId() {
   if (NEGOCIO_ID) return NEGOCIO_ID;
   const { data } = await supabase.from("negocios").select("id").limit(1);
   return data?.[0]?.id ?? null;
+}
+
+async function loadOwnerChatIds() {
+  try {
+    const { data } = await supabase
+      .from("whatsapp_chat_config")
+      .select("chat_id")
+      .eq("modo", "owner");
+    if (data?.length) {
+      for (const row of data) ownerChatIds.add(row.chat_id);
+      console.log(`[OWNER] ${data.length} chat(s) autenticados como dueño cargados`);
+    }
+  } catch (err) {
+    console.error("[OWNER] Error cargando owner chatIds:", err.message);
+  }
+}
+
+async function resolveOwnerChatId() {
+  if (!OWNER_PHONE || !healthy) return;
+  // Si ya tenemos un chatId del dueño (cargado de DB), no buscar más
+  if (ownerChatIds.size > 0) {
+    console.log(`[OWNER] Ya hay ${ownerChatIds.size} chatId(s) del dueño en memoria`);
+    return;
+  }
+
+  console.log(`[OWNER] Intentando resolver OWNER_PHONE=${OWNER_PHONE} -> chatId...`);
+
+  // 1. Intentar checkNumberStatus (WAHA Core)
+  try {
+    const result = await wahaFetch(`/api/checkNumberStatus`, {
+      method: "POST",
+      body: JSON.stringify({ session: WAHA_SESSION, phone: OWNER_PHONE }),
+    });
+    if (result?.id?._serialized || result?.chatId) {
+      const chatId = result.id?._serialized || result.chatId;
+      ownerChatIds.add(chatId);
+      phoneCache.set(chatId, OWNER_PHONE);
+      console.log(`[OWNER] Resuelto por checkNumberStatus: ${OWNER_PHONE} -> ${chatId}`);
+      return;
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 2. Intentar contacts/check-exists (WAHA Plus)
+  try {
+    const result = await wahaFetch(`/api/${WAHA_SESSION}/contacts/check-exists`, {
+      method: "POST",
+      body: JSON.stringify({ phone: OWNER_PHONE }),
+    });
+    if (result?.id?._serialized || result?.chatId) {
+      const chatId = result.id?._serialized || result.chatId;
+      ownerChatIds.add(chatId);
+      phoneCache.set(chatId, OWNER_PHONE);
+      console.log(`[OWNER] Resuelto por check-exists: ${OWNER_PHONE} -> ${chatId}`);
+      return;
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 3. Fallback: buscar en los chats existentes
+  try {
+    const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
+    if (Array.isArray(chats)) {
+      for (const chat of chats) {
+        const rawId = chat.id?._serialized || chat.id;
+        const chatId = typeof rawId === "string" ? rawId : String(rawId ?? "");
+        if (chatId.includes(OWNER_PHONE) || chatId.includes(OWNER_PHONE.slice(-10))) {
+          ownerChatIds.add(chatId);
+          phoneCache.set(chatId, OWNER_PHONE);
+          console.log(`[OWNER] Encontrado en chats: ${chatId}`);
+          return;
+        }
+      }
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 4. Fallback final: agregar formato @c.us
+  ownerChatIds.add(`${OWNER_PHONE}@c.us`);
+  console.log(`[OWNER] No se pudo resolver LID, usando @c.us: ${OWNER_PHONE}@c.us`);
 }
 
 // ─── Funciones de datos ──────────────────────────────────
@@ -493,6 +581,11 @@ Usá emojis con moderación (✂️💈📅).
 SERVICIOS DISPONIBLES:
 ${listaServicios || "No hay servicios cargados"}
 
+SERVICIO DE URGENCIA (lunes o días/horarios fuera de atención):
+- Corte de urgencia: $20.000 (requiere aviso con 24hs de anticipación mínimo)
+- Corte + Barba de urgencia: $22.000 (requiere aviso con 24hs de anticipación mínimo)
+IMPORTANTE: Si un cliente pide turno para un LUNES o fuera del horario de atención, ofrecele el servicio de urgencia con la tarifa especial. Explicale que tiene que avisar con mínimo 24 horas de anticipación. Si acepta, agendá normalmente con la acción "agendar" usando el servicio original (corte o corte+barba), el sistema notifica al dueño.
+
 HORARIOS DE ATENCIÓN:
 ${listaHorarios || "No hay horarios configurados"}
 
@@ -522,6 +615,65 @@ REGLAS:
 - No agendés sin confirmar con el cliente el nombre completo, servicio, fecha y hora
 - Si el cliente quiere un turno en un día/horario cerrado o fuera de los horarios de atención, IGUALMENTE intentá agendar con la acción "agendar". El sistema se encarga de consultar al dueño por la excepción. NO le digas al cliente que no se puede, dejá que el sistema maneje la excepción.
 - Si después de 2 intentos no podés resolver lo que pide el cliente, usá la acción "escalate"
+- Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
+- Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
+}
+
+function buildOwnerSystemPrompt(servicios, horarios) {
+  const hoy = nowArgentina();
+  const fechaHoy = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(hoy.getDate()).padStart(2,"0")}`;
+  const diaHoy = DIAS_ES[hoy.getDay()];
+
+  const listaServicios = servicios.map(
+    (s) => `- ${s.nombre}: $${s.precio} (${s.duracion_minutos} min)`
+  ).join("\n");
+
+  const listaHorarios = horarios.map((h) => {
+    if (h.cerrado) return `- ${DIAS_ES[h.dia_semana]}: CERRADO`;
+    const m = h.hora_apertura_manana && h.hora_cierre_manana
+      ? `${h.hora_apertura_manana.slice(0,5)}-${h.hora_cierre_manana.slice(0,5)}`
+      : "";
+    const t = h.hora_apertura_tarde && h.hora_cierre_tarde
+      ? `${h.hora_apertura_tarde.slice(0,5)}-${h.hora_cierre_tarde.slice(0,5)}`
+      : "";
+    return `- ${DIAS_ES[h.dia_semana]}: ${[m, t].filter(Boolean).join(" y ")}`;
+  }).join("\n");
+
+  return `Sos el asistente virtual de ${NEGOCIO_NOMBRE} por WhatsApp.
+Hoy es ${diaHoy} ${fechaHoy}.
+
+⚠️ IMPORTANTE: Estás hablando con el DUEÑO del negocio, NO con un cliente.
+Tratalo como jefe/dueño. Hablale con confianza, como un asistente personal.
+
+Hablás en español argentino con voseo. Sé directo y eficiente.
+
+SERVICIOS:
+${listaServicios || "No hay servicios cargados"}
+
+HORARIOS:
+${listaHorarios || "No hay horarios configurados"}
+
+FUNCIONES DISPONIBLES - Respondé con JSON de acción cuando corresponda:
+
+1. VER TURNOS DEL DÍA: Si pregunta por los turnos de hoy o de un día:
+   {"action":"disponibilidad","fecha":"YYYY-MM-DD","servicio":"cualquiera"}
+
+2. AGENDAR TURNO para un cliente: Si te pide agendar un turno para alguien:
+   {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"Nombre Apellido del cliente"}
+
+3. CANCELAR TURNO:
+   {"action":"cancelar","turno_id":"id del turno"}
+
+COMO DUEÑO PUEDE:
+- Preguntarte qué turnos hay hoy o cualquier día
+- Pedirte que agendes turnos para clientes
+- Preguntarte por la agenda de la semana
+- Pedirte info del negocio, servicios, precios
+- Cualquier consulta de gestión del negocio
+
+REGLAS:
+- NUNCA le ofrezcas servicios ni le intentes vender nada, es el DUEÑO
+- Si te dice algo informal o personal, respondé normal como un asistente amigable
 - Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
 - Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
 }
@@ -646,8 +798,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
         // Día cerrado → notificar al dueño para posible excepción
         const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
         const nombre = cliente?.nombre || action.nombre || phone;
-        notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Ese día estamos cerrados. ¿Hacemos la excepción?`);
-        return `Ese día (${DIAS_ES[diaSemana]}) normalmente estamos cerrados, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+        const tarifaUrgencia = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+        notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaUrgencia}\n\n⚠️ Ese día estamos cerrados. ¿Confirmamos?`);
+        return `Ese día (${DIAS_ES[diaSemana]}) normalmente estamos cerrados, pero tenemos el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le avisé al dueño para confirmar tu turno. Te aviso en breve. 🙏`;
       }
 
       const turnos = await getTurnosDelDia(negocioId, fecha);
@@ -658,8 +811,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
           // No hay nada disponible → consultar al dueño
           const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
           const nombre = cliente?.nombre || action.nombre || phone;
-          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ No hay disponibilidad ese día. ¿Hacemos la excepción?`);
-          return `No tenemos disponibilidad ese día, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏`;
+          const tarifaUrg = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+          notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaUrg}\n\n⚠️ No hay disponibilidad ese día. ¿Confirmamos?`);
+          return `No tenemos disponibilidad ese día, pero podemos ofrecerte el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le consulté al dueño. Te aviso en breve. 🙏`;
         }
         // Hay otros horarios → ofrecer alternativas pero también notificar si pidió fuera de rango
         const horaNum = parseInt(hora.split(":")[0]) * 60 + parseInt(hora.split(":")[1]);
@@ -679,8 +833,9 @@ async function handleBotAction(action, negocioId, chatId, phone) {
           // Pidió fuera del rango de horarios → notificar al dueño
           const cliente = await getOrCreateCliente(negocioId, phone, action.nombre);
           const nombre = cliente?.nombre || action.nombre || phone;
-          notifyOwner(`📋 *Solicitud fuera de horario*\n\n👤 ${nombre} (${phone})\n📅 Quiere turno el ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n\n⚠️ Fuera del horario de atención. ¿Hacemos la excepción?`);
-          return `Ese horario (${hora}) está fuera de nuestro horario de atención, pero ya le consulté al dueño si puede hacer una excepción. Te aviso en breve. 🙏\n\nSi querés, estos horarios sí están disponibles: ${sugerencias}`;
+          const tarifaFuera = servicio.nombre.toLowerCase().includes("barba") ? "22.000" : "20.000";
+          notifyOwner(`🚨 *Turno de URGENCIA*\n\n👤 ${nombre} (${phone})\n📅 ${DIAS_ES[diaSemana]} ${fecha} a las ${hora}\n✂️ ${servicio.nombre}\n💰 Tarifa urgencia: $${tarifaFuera}\n\n⚠️ Fuera del horario de atención. ¿Confirmamos?`);
+          return `Ese horario (${hora}) está fuera de nuestro horario de atención, pero tenemos el *servicio de urgencia* 🚨\n\n💰 Tarifa especial:\n- Corte: $20.000\n- Corte + Barba: $22.000\n\n⚠️ Requiere aviso con mínimo 24hs de anticipación.\n\nYa le consulté al dueño. Te aviso en breve. 🙏\n\nSi preferís horario normal, estos están disponibles: ${sugerencias}`;
         }
         return `El horario ${hora} no está disponible para el ${fecha}. Horarios libres: ${sugerencias}`;
       }
@@ -791,6 +946,23 @@ async function handleBotAction(action, negocioId, chatId, phone) {
 async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
   const phone = await getPhoneFromChat(chatId);
 
+  // Autenticación por access key del dueño
+  if (OWNER_ACCESS_KEY && texto.trim() === OWNER_ACCESS_KEY) {
+    ownerChatIds.add(chatId);
+    await supabase.from("whatsapp_chat_config").upsert(
+      { negocio_id: negocioId, chat_id: chatId, modo: "owner" },
+      { onConflict: "negocio_id,chat_id" }
+    );
+    const msg = "✅ Autenticación exitosa. Te reconozco como dueño del negocio. ¿En qué te puedo ayudar?";
+    await sendWhatsApp(chatId, msg);
+    await supabase.from("whatsapp_mensajes").insert({
+      negocio_id: negocioId, chat_id: chatId, mensaje: msg,
+      es_entrante: false, mensaje_tipo: "text", wa_message_id: waMessageId + "_auth",
+    });
+    console.log(`🔑 [OWNER AUTH] ${chatId} autenticado como dueño`);
+    return;
+  }
+
   // Verificar modo del chat (bot vs manual)
   const { data: config } = await supabase
     .from("whatsapp_chat_config")
@@ -812,10 +984,29 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     getChatHistory(negocioId, chatId, 20),
   ]);
 
-  const systemPrompt = buildSystemPrompt(servicios, horarios);
+  // Detectar si es el dueño (por access key previo, o por número de teléfono)
+  const isOwner = ownerChatIds.has(chatId) || phone === OWNER_PHONE || phone === `549${OWNER_PHONE}` || OWNER_PHONE?.endsWith(phone?.slice(-10));
+  // Persistir chatId si se detectó por teléfono pero no estaba guardado
+  if (isOwner && !ownerChatIds.has(chatId)) {
+    ownerChatIds.add(chatId);
+    supabase.from("whatsapp_chat_config").upsert(
+      { negocio_id: negocioId, chat_id: chatId, modo: "owner" },
+      { onConflict: "negocio_id,chat_id" }
+    ).then(() => console.log(`[OWNER] ${chatId} guardado como dueño (por teléfono)`));
+  }
+  const systemPrompt = isOwner
+    ? buildOwnerSystemPrompt(servicios, horarios)
+    : buildSystemPrompt(servicios, horarios);
+
+  // Para el dueño, descartar historial viejo donde fue tratado como cliente
+  // Solo usar mensajes recientes que ya tengan contexto de dueño
+  const ownerHistoryCleaned = isOwner
+    ? history.filter((m) => !(m.role === "assistant" && (m.content.includes("¿Cómo puedo ayudarte hoy?") || m.content.includes("ofrecemos el servicio") || m.content.includes("¿Querés agendar"))))
+    : history;
+  const relevantHistory = isOwner ? ownerHistoryCleaned.slice(-4) : ownerHistoryCleaned;
   const messages = [
     { role: "system", content: systemPrompt },
-    ...history,
+    ...relevantHistory,
   ];
 
   // Asegurar que messages termine con el mensaje actual del usuario
@@ -852,7 +1043,7 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
     wa_message_id: sent?.id ?? null,
   });
 
-  console.log(`🤖 [bot] -> ${phone}: "${respuesta.slice(0, 80)}..."`);
+  console.log(`🤖 [bot${isOwner ? "/dueño" : ""}] -> ${phone}: "${respuesta.slice(0, 80)}..."`);
 }
 
 // ─── Polling de mensajes entrantes ───────────────────────
@@ -1185,9 +1376,11 @@ console.log(`  WAHA: ${WAHA_API_URL} (sesion: ${WAHA_SESSION})`);
 console.log(`  Supabase: ${SUPABASE_URL}`);
 console.log(`  IA: ${OPENAI_API_KEY ? "OpenAI" : ""}${OPENAI_API_KEY && ANTHROPIC_API_KEY ? " + " : ""}${ANTHROPIC_API_KEY ? "Anthropic (fallback)" : ""}`);
 console.log(`  Poll: ${interval}ms | Puerto: ${BOT_PORT}`);
+console.log(`  Owner access key: ${OWNER_ACCESS_KEY ? "configurada" : "no configurada"}`);
 
-httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", () => {
+httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", async () => {
   console.log(`Bot escuchando en :${BOT_PORT}`);
+  await loadOwnerChatIds();
   tick();
   setInterval(tick, interval);
 });
