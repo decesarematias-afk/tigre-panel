@@ -20,6 +20,7 @@ const {
   NEGOCIO_DIRECCION = "",
   NEGOCIO_TELEFONO = "",
   OWNER_PHONE = "5491159027202",
+  OWNER_CHAT_ID = "",
   OWNER_ACCESS_KEY = "",
 } = process.env;
 
@@ -275,8 +276,9 @@ async function transcribeAudio(waMessageId, chatId, msgMedia) {
 }
 
 async function notifyOwner(text) {
-  if (!OWNER_PHONE) return;
-  const chatId = `${OWNER_PHONE}@c.us`;
+  // Preferir OWNER_CHAT_ID (soporta @lid), fallback a OWNER_PHONE@c.us
+  const chatId = OWNER_CHAT_ID || (OWNER_PHONE ? `${OWNER_PHONE}@c.us` : null);
+  if (!chatId) return;
   const sent = await sendWhatsApp(chatId, text);
   if (sent) console.log(`📢 Owner notificado: "${text.slice(0, 60)}..."`);
   return sent;
@@ -324,7 +326,18 @@ async function loadOwnerChatIds() {
 }
 
 async function resolveOwnerChatId() {
-  if (!OWNER_PHONE || !healthy) return;
+  if (!healthy) return;
+
+  // Si OWNER_CHAT_ID está configurado, usarlo directamente (más confiable)
+  if (OWNER_CHAT_ID) {
+    ownerChatIds.add(OWNER_CHAT_ID);
+    if (OWNER_PHONE) phoneCache.set(OWNER_CHAT_ID, OWNER_PHONE);
+    console.log(`[OWNER] Configurado por OWNER_CHAT_ID: ${OWNER_CHAT_ID}`);
+    return;
+  }
+
+  if (!OWNER_PHONE) return;
+
   // Si ya tenemos un chatId del dueño (cargado de DB), no buscar más
   if (ownerChatIds.size > 0) {
     console.log(`[OWNER] Ya hay ${ownerChatIds.size} chatId(s) del dueño en memoria`);
@@ -1376,7 +1389,7 @@ console.log(`  WAHA: ${WAHA_API_URL} (sesion: ${WAHA_SESSION})`);
 console.log(`  Supabase: ${SUPABASE_URL}`);
 console.log(`  IA: ${OPENAI_API_KEY ? "OpenAI" : ""}${OPENAI_API_KEY && ANTHROPIC_API_KEY ? " + " : ""}${ANTHROPIC_API_KEY ? "Anthropic (fallback)" : ""}`);
 console.log(`  Poll: ${interval}ms | Puerto: ${BOT_PORT}`);
-console.log(`  Owner access key: ${OWNER_ACCESS_KEY ? "configurada" : "no configurada"}`);
+console.log(`  Owner: ${OWNER_CHAT_ID || OWNER_PHONE || "no configurado"} ${OWNER_ACCESS_KEY ? "(access key configurada)" : ""}`);
 
 httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", async () => {
   console.log(`Bot escuchando en :${BOT_PORT}`);
