@@ -152,6 +152,12 @@ async function getPhoneFromChat(chatId) {
     console.error("[CONTACT] Error resolving phone:", err.message);
   }
 
+  // Si es un chatId conocido como owner, devolver OWNER_PHONE
+  if (ownerChatIds.has(chatId) && OWNER_PHONE) {
+    phoneCache.set(chatId, OWNER_PHONE);
+    return OWNER_PHONE;
+  }
+
   // Fallback: usar el ID numérico (puede no ser teléfono real)
   const fallback = chatId.replace(/@c\.us$|@lid$/, "");
   phoneCache.set(chatId, fallback);
@@ -285,7 +291,10 @@ async function checkWahaSession() {
   }
   const validStatuses = ["WORKING", "CONNECTED", "AUTHENTICATED"];
   const ok = validStatuses.includes(data.status);
-  if (!healthy && ok) console.log(`[SESSION] WAHA "${WAHA_SESSION}" activa (status: ${data.status})`);
+  if (!healthy && ok) {
+    console.log(`[SESSION] WAHA "${WAHA_SESSION}" activa (status: ${data.status})`);
+    resolveOwnerChatId();
+  }
   if (healthy && !ok) console.warn(`[SESSION] WAHA "${WAHA_SESSION}" no saludable: ${data.status}`);
   if (!ok) console.warn(`[SESSION] Status: ${data.status} (esperado: ${validStatuses.join("/")})`);
   healthy = ok;
@@ -312,6 +321,68 @@ async function loadOwnerChatIds() {
   } catch (err) {
     console.error("[OWNER] Error cargando owner chatIds:", err.message);
   }
+}
+
+async function resolveOwnerChatId() {
+  if (!OWNER_PHONE || !healthy) return;
+  // Si ya tenemos un chatId del dueño (cargado de DB), no buscar más
+  if (ownerChatIds.size > 0) {
+    console.log(`[OWNER] Ya hay ${ownerChatIds.size} chatId(s) del dueño en memoria`);
+    return;
+  }
+
+  console.log(`[OWNER] Intentando resolver OWNER_PHONE=${OWNER_PHONE} -> chatId...`);
+
+  // 1. Intentar checkNumberStatus (WAHA Core)
+  try {
+    const result = await wahaFetch(`/api/checkNumberStatus`, {
+      method: "POST",
+      body: JSON.stringify({ session: WAHA_SESSION, phone: OWNER_PHONE }),
+    });
+    if (result?.id?._serialized || result?.chatId) {
+      const chatId = result.id?._serialized || result.chatId;
+      ownerChatIds.add(chatId);
+      phoneCache.set(chatId, OWNER_PHONE);
+      console.log(`[OWNER] Resuelto por checkNumberStatus: ${OWNER_PHONE} -> ${chatId}`);
+      return;
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 2. Intentar contacts/check-exists (WAHA Plus)
+  try {
+    const result = await wahaFetch(`/api/${WAHA_SESSION}/contacts/check-exists`, {
+      method: "POST",
+      body: JSON.stringify({ phone: OWNER_PHONE }),
+    });
+    if (result?.id?._serialized || result?.chatId) {
+      const chatId = result.id?._serialized || result.chatId;
+      ownerChatIds.add(chatId);
+      phoneCache.set(chatId, OWNER_PHONE);
+      console.log(`[OWNER] Resuelto por check-exists: ${OWNER_PHONE} -> ${chatId}`);
+      return;
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 3. Fallback: buscar en los chats existentes
+  try {
+    const chats = await wahaFetch(`/api/${WAHA_SESSION}/chats`);
+    if (Array.isArray(chats)) {
+      for (const chat of chats) {
+        const rawId = chat.id?._serialized || chat.id;
+        const chatId = typeof rawId === "string" ? rawId : String(rawId ?? "");
+        if (chatId.includes(OWNER_PHONE) || chatId.includes(OWNER_PHONE.slice(-10))) {
+          ownerChatIds.add(chatId);
+          phoneCache.set(chatId, OWNER_PHONE);
+          console.log(`[OWNER] Encontrado en chats: ${chatId}`);
+          return;
+        }
+      }
+    }
+  } catch (e) { /* silencioso */ }
+
+  // 4. Fallback final: agregar formato @c.us
+  ownerChatIds.add(`${OWNER_PHONE}@c.us`);
+  console.log(`[OWNER] No se pudo resolver LID, usando @c.us: ${OWNER_PHONE}@c.us`);
 }
 
 // ─── Funciones de datos ──────────────────────────────────
