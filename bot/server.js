@@ -436,10 +436,29 @@ async function getHorarios(negocioId) {
 async function getTurnosDelDia(negocioId, fecha) {
   const { data } = await supabase
     .from("turnos")
-    .select("id, hora_inicio, hora_fin, estado, servicio:servicios(nombre)")
+    .select("id, hora_inicio, hora_fin, estado, servicio:servicios(nombre), cliente:clientes(nombre, telefono)")
     .eq("negocio_id", negocioId)
     .eq("fecha", fecha)
     .neq("estado", "cancelado")
+    .order("hora_inicio");
+  return data || [];
+}
+
+async function getTurnosSemana(negocioId) {
+  const hoy = nowArgentina();
+  const fechaHoy = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(hoy.getDate()).padStart(2,"0")}`;
+  const fin = new Date(hoy);
+  fin.setDate(fin.getDate() + 7);
+  const fechaFin = `${fin.getFullYear()}-${String(fin.getMonth()+1).padStart(2,"0")}-${String(fin.getDate()).padStart(2,"0")}`;
+
+  const { data } = await supabase
+    .from("turnos")
+    .select("id, fecha, hora_inicio, hora_fin, estado, servicio:servicios(nombre), cliente:clientes(nombre, telefono)")
+    .eq("negocio_id", negocioId)
+    .gte("fecha", fechaHoy)
+    .lte("fecha", fechaFin)
+    .neq("estado", "cancelado")
+    .order("fecha")
     .order("hora_inicio");
   return data || [];
 }
@@ -464,6 +483,44 @@ async function getOrCreateCliente(negocioId, phone, nombre) {
 
   if (error) { console.error("Error creando cliente:", error.message); return null; }
   return created;
+}
+
+async function buscarCliente(negocioId, busqueda) {
+  // Buscar por nombre (ilike) o teléfono
+  let query = supabase
+    .from("clientes")
+    .select("id, nombre, telefono")
+    .eq("negocio_id", negocioId);
+
+  // Si parece teléfono (solo dígitos), buscar por teléfono
+  if (/^\d+$/.test(busqueda)) {
+    query = query.ilike("telefono", `%${busqueda}%`);
+  } else {
+    query = query.ilike("nombre", `%${busqueda}%`);
+  }
+
+  const { data: clientes } = await query.limit(5);
+  if (!clientes?.length) return null;
+
+  // Para cada cliente, traer sus turnos próximos
+  const hoy = nowArgentina();
+  const fechaHoy = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(hoy.getDate()).padStart(2,"0")}`;
+
+  const resultados = [];
+  for (const cli of clientes) {
+    const { data: turnos } = await supabase
+      .from("turnos")
+      .select("id, fecha, hora_inicio, hora_fin, estado, servicio:servicios(nombre)")
+      .eq("negocio_id", negocioId)
+      .eq("cliente_id", cli.id)
+      .gte("fecha", fechaHoy)
+      .neq("estado", "cancelado")
+      .order("fecha")
+      .order("hora_inicio")
+      .limit(5);
+    resultados.push({ ...cli, turnos: turnos || [] });
+  }
+  return resultados;
 }
 
 function calcularHorariosDisponibles(horariosDia, turnosExistentes, duracionMin) {
@@ -657,6 +714,7 @@ Hoy es ${diaHoy} ${fechaHoy}.
 
 ⚠️ IMPORTANTE: Estás hablando con el DUEÑO del negocio, NO con un cliente.
 Tratalo como jefe/dueño. Hablale con confianza, como un asistente personal.
+Sos su herramienta de gestión: le das datos REALES del negocio, turnos agendados, info de clientes.
 
 Hablás en español argentino con voseo. Sé directo y eficiente.
 
@@ -666,29 +724,37 @@ ${listaServicios || "No hay servicios cargados"}
 HORARIOS:
 ${listaHorarios || "No hay horarios configurados"}
 
-FUNCIONES DISPONIBLES - Respondé con JSON de acción cuando corresponda:
+ACCIONES DISPONIBLES - Respondé SOLO con JSON cuando corresponda:
 
-1. VER TURNOS DEL DÍA: Si pregunta por los turnos de hoy o de un día:
-   {"action":"disponibilidad","fecha":"YYYY-MM-DD","servicio":"cualquiera"}
+1. VER TURNOS AGENDADOS DE UN DÍA (quién tiene turno, a qué hora, qué servicio):
+   {"action":"turnos_dia","fecha":"YYYY-MM-DD"}
+   Usá esto cuando pregunte: "qué turnos tengo hoy", "cuántos clientes tengo mañana", "cómo está la agenda del viernes", etc.
 
-2. AGENDAR TURNO para un cliente: Si te pide agendar un turno para alguien:
+2. VER AGENDA DE LA SEMANA (resumen de los próximos 7 días):
+   {"action":"resumen_semana"}
+   Usá esto cuando pregunte: "cómo viene la semana", "qué tengo esta semana", etc.
+
+3. BUSCAR CLIENTE (buscar por nombre o teléfono y ver sus turnos):
+   {"action":"info_cliente","busqueda":"nombre o teléfono"}
+   Usá esto cuando pregunte: "buscame a Juan", "tiene turno el de tal número", etc.
+
+4. AGENDAR TURNO para un cliente:
    {"action":"agendar","servicio":"nombre del servicio","fecha":"YYYY-MM-DD","hora":"HH:MM","nombre":"Nombre Apellido del cliente"}
 
-3. CANCELAR TURNO:
-   {"action":"cancelar","turno_id":"id del turno"}
+5. CANCELAR TURNO (el dueño puede cancelar cualquier turno):
+   {"action":"cancelar_owner","turno_id":"id del turno"}
 
-COMO DUEÑO PUEDE:
-- Preguntarte qué turnos hay hoy o cualquier día
-- Pedirte que agendes turnos para clientes
-- Preguntarte por la agenda de la semana
-- Pedirte info del negocio, servicios, precios
-- Cualquier consulta de gestión del negocio
+6. VER HORARIOS DISPONIBLES (huecos libres para agendar):
+   {"action":"disponibilidad","fecha":"YYYY-MM-DD","servicio":"cualquiera"}
+   Usá esto SOLO cuando pida ver qué horarios quedan libres para agendar, NO cuando pregunte por turnos existentes.
 
-REGLAS:
+REGLAS CRÍTICAS:
+- NUNCA confundas "turnos agendados" con "horarios disponibles". Si pregunta cuántos turnos tiene → turnos_dia. Si pregunta qué horarios quedan libres → disponibilidad.
 - NUNCA le ofrezcas servicios ni le intentes vender nada, es el DUEÑO
 - Si te dice algo informal o personal, respondé normal como un asistente amigable
-- Para fechas relativas (mañana, el viernes, etc), calculá la fecha real
-- Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más`;
+- Para fechas relativas (mañana, el viernes, etc), calculá la fecha real basándote en que hoy es ${diaHoy} ${fechaHoy}
+- Cuando respondas con JSON de acción, respondé SOLO el JSON, nada más
+- Si no hay turnos un día, decile directamente que no tiene turnos agendados`;
 }
 
 async function callOpenAI(messages) {
@@ -787,8 +853,101 @@ function tryParseAction(text) {
   }
 }
 
-async function handleBotAction(action, negocioId, chatId, phone) {
+async function handleBotAction(action, negocioId, chatId, phone, isOwner = false) {
   switch (action.action) {
+    // ─── Acciones exclusivas del dueño ───
+    case "turnos_dia": {
+      if (!isOwner) return null;
+      const fecha = action.fecha;
+      if (!fecha) return "¿De qué día querés ver los turnos?";
+
+      const turnos = await getTurnosDelDia(negocioId, fecha);
+      const diaSemana = new Date(fecha + "T12:00:00").getDay();
+
+      if (!turnos.length) return `No hay turnos agendados para el ${DIAS_ES[diaSemana]} ${fecha}.`;
+
+      const lista = turnos.map((t, i) =>
+        `${i + 1}. ⏰ ${t.hora_inicio.slice(0,5)}-${t.hora_fin.slice(0,5)} | ${t.cliente?.nombre || "Sin nombre"} | ${t.servicio?.nombre || "Servicio"} (${t.estado})`
+      ).join("\n");
+
+      return `📋 *Turnos del ${DIAS_ES[diaSemana]} ${fecha}:*\n\n${lista}\n\n*Total: ${turnos.length} turno${turnos.length > 1 ? "s" : ""}*`;
+    }
+
+    case "resumen_semana": {
+      if (!isOwner) return null;
+      const turnos = await getTurnosSemana(negocioId);
+
+      if (!turnos.length) return "No hay turnos agendados para los próximos 7 días.";
+
+      // Agrupar por fecha
+      const porDia = {};
+      for (const t of turnos) {
+        if (!porDia[t.fecha]) porDia[t.fecha] = [];
+        porDia[t.fecha].push(t);
+      }
+
+      let resumen = "📅 *Agenda de la semana:*\n";
+      for (const [fecha, turnosDia] of Object.entries(porDia)) {
+        const diaSemana = new Date(fecha + "T12:00:00").getDay();
+        resumen += `\n*${DIAS_ES[diaSemana]} ${fecha}* — ${turnosDia.length} turno${turnosDia.length > 1 ? "s" : ""}`;
+        for (const t of turnosDia) {
+          resumen += `\n  ⏰ ${t.hora_inicio.slice(0,5)} | ${t.cliente?.nombre || "Sin nombre"} | ${t.servicio?.nombre || "Servicio"}`;
+        }
+      }
+
+      const total = turnos.length;
+      resumen += `\n\n*Total semana: ${total} turno${total > 1 ? "s" : ""}*`;
+      return resumen;
+    }
+
+    case "info_cliente": {
+      if (!isOwner) return null;
+      const busqueda = action.busqueda;
+      if (!busqueda) return "¿A quién querés buscar? Decime el nombre o teléfono.";
+
+      const resultados = await buscarCliente(negocioId, busqueda);
+      if (!resultados) return `No encontré clientes con "${busqueda}".`;
+
+      let resp = `🔍 *Resultados para "${busqueda}":*\n`;
+      for (const cli of resultados) {
+        resp += `\n👤 *${cli.nombre}* (${cli.telefono || "sin tel"})`;
+        if (cli.turnos.length) {
+          for (const t of cli.turnos) {
+            resp += `\n  📅 ${t.fecha} ⏰ ${t.hora_inicio.slice(0,5)} | ${t.servicio?.nombre || "Servicio"} (${t.estado})`;
+          }
+        } else {
+          resp += "\n  Sin turnos próximos";
+        }
+      }
+      return resp;
+    }
+
+    case "cancelar_owner": {
+      if (!isOwner) return null;
+      const turnoId = action.turno_id;
+      if (!turnoId) return "Necesito el ID del turno para cancelar. Primero consultá los turnos del día.";
+
+      // El dueño puede cancelar cualquier turno sin necesitar cliente_id
+      const { data: turnoInfo } = await supabase
+        .from("turnos")
+        .select("fecha, hora_inicio, cliente:clientes(nombre, telefono), servicio:servicios(nombre)")
+        .eq("id", turnoId)
+        .single();
+
+      if (!turnoInfo) return "No encontré ese turno. Verificá el ID.";
+
+      const { error } = await supabase
+        .from("turnos")
+        .update({ estado: "cancelado" })
+        .eq("id", turnoId);
+
+      if (error) return `Error al cancelar: ${error.message}`;
+
+      botCancelledTurnos.add(turnoId);
+      return `✅ Turno cancelado:\n📅 ${turnoInfo.fecha} ⏰ ${turnoInfo.hora_inicio?.slice(0,5)}\n👤 ${turnoInfo.cliente?.nombre || "Sin nombre"}\n✂️ ${turnoInfo.servicio?.nombre || "Servicio"}`;
+    }
+
+    // ─── Acciones compartidas ───
     case "agendar": {
       const servicios = await getServicios(negocioId);
       const servicio = servicios.find(
@@ -1039,7 +1198,7 @@ async function handleIncomingMessage(negocioId, chatId, texto, waMessageId) {
   // Verificar si la IA respondió con una acción
   const action = tryParseAction(respuesta);
   if (action) {
-    const actionResult = await handleBotAction(action, negocioId, chatId, phone);
+    const actionResult = await handleBotAction(action, negocioId, chatId, phone, isOwner);
     if (actionResult) respuesta = actionResult;
   }
 
