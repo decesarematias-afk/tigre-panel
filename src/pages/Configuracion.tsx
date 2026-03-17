@@ -3,7 +3,8 @@ import { ServiciosConfig } from "@/components/configuracion/ServiciosConfig"
 import { HorariosConfig } from "@/components/configuracion/HorariosConfig"
 import { NegocioConfig } from "@/components/configuracion/NegocioConfig"
 import { WahaConfig } from "@/components/configuracion/WahaConfig"
-import { Scissors, Clock, Store, MessageSquare } from "lucide-react"
+import { OwnerAccessConfig } from "@/components/configuracion/OwnerAccessConfig"
+import { Scissors, Clock, Store, MessageSquare, Shield } from "lucide-react"
 
 export function Configuracion() {
   return (
@@ -28,6 +29,10 @@ export function Configuracion() {
             <MessageSquare className="w-4 h-4 mr-2" />
             WAHA
           </TabsTrigger>
+          <TabsTrigger value="bot-dueno" className="flex-1 sm:flex-none">
+            <Shield className="w-4 h-4 mr-2" />
+            Bot Dueño
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="servicios" className="mt-4">
           <ServiciosConfig />
@@ -40,6 +45,9 @@ export function Configuracion() {
         </TabsContent>
         <TabsContent value="whatsapp" className="mt-4">
           <WahaConfig />
+        </TabsContent>
+        <TabsContent value="bot-dueno" className="mt-4">
+          <OwnerAccessConfig />
         </TabsContent>
       </Tabs>
     </div>

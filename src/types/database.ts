@@ -11,6 +11,8 @@ export interface Negocio {
   email: string | null
   waha_url: string | null
   waha_api_key: string | null
+  owner_phone: string | null
+  owner_access_key: string | null
   created_at: string
 }
 

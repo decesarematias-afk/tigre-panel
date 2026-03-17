@@ -19,11 +19,16 @@ const {
   NEGOCIO_NOMBRE = "Cruz Barber Studio",
   NEGOCIO_DIRECCION = "",
   NEGOCIO_TELEFONO = "",
-  OWNER_PHONE = "5491159027202",
-  OWNER_CHAT_ID = "",
-  OWNER_ACCESS_KEY = "",
+  OWNER_PHONE: ENV_OWNER_PHONE = "5491159027202",
+  OWNER_CHAT_ID: ENV_OWNER_CHAT_ID = "",
+  OWNER_ACCESS_KEY: ENV_OWNER_ACCESS_KEY = "",
   EXTRA_OWNERS = "",
 } = process.env;
+
+// Owner config mutable — se sobreescribe con valores de DB si existen
+let OWNER_PHONE = ENV_OWNER_PHONE;
+let OWNER_CHAT_ID = ENV_OWNER_CHAT_ID;
+let OWNER_ACCESS_KEY = ENV_OWNER_ACCESS_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY");
@@ -327,6 +332,26 @@ async function loadOwnerChatIds() {
     }
   } catch (err) {
     console.error("[OWNER] Error cargando owner chatIds:", err.message);
+  }
+}
+
+async function loadOwnerConfigFromDB(negocioId) {
+  try {
+    const { data } = await supabase
+      .from("negocios")
+      .select("owner_phone, owner_access_key")
+      .eq("id", negocioId)
+      .single();
+    if (data?.owner_phone) {
+      OWNER_PHONE = data.owner_phone;
+      console.log(`[OWNER] Teléfono del dueño cargado de DB: ${OWNER_PHONE}`);
+    }
+    if (data?.owner_access_key) {
+      OWNER_ACCESS_KEY = data.owner_access_key;
+      console.log(`[OWNER] Access key cargada de DB`);
+    }
+  } catch (err) {
+    console.error("[OWNER] Error cargando config de dueño de DB:", err.message);
   }
 }
 
@@ -1578,7 +1603,10 @@ console.log(`  Owner: ${OWNER_CHAT_ID || OWNER_PHONE || "no configurado"} ${OWNE
 
 httpServer.listen(parseInt(BOT_PORT, 10), "0.0.0.0", async () => {
   console.log(`Bot escuchando en :${BOT_PORT}`);
+  const negocioId = await getNegocioId();
+  if (negocioId) await loadOwnerConfigFromDB(negocioId);
   await loadOwnerChatIds();
+  console.log(`  Owner: ${OWNER_CHAT_ID || OWNER_PHONE || "no configurado"} ${OWNER_ACCESS_KEY ? "(access key configurada)" : ""}`);
   tick();
   setInterval(tick, interval);
 });
